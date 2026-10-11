@@ -16,3 +16,4 @@ database_id = "4df9cafb-0659-435a-ac67-ca57c4d82f78"
 
 [vars]
 APP_NAME = "StarsVideoSync"
+ADMIN_EMAIL = "yukidu@gmail.com"
