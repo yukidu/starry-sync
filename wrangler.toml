@@ -1,0 +1,19 @@
+name = "starsvideosync"
+main = "worker/index.ts"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+# 建立 D1 後填入真實 database_id
+[[d1_databases]]
+binding = "DB"
+database_name = "starsvideosync_db"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+[vars]
+APP_NAME = "StarsVideoSync"
