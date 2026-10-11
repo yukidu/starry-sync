@@ -7,7 +7,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.headers || {}),
     },
   });
-  const data = await response.json().catch(() => ({}));
+  const data: any = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
   return data as T;
 }
