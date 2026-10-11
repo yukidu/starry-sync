@@ -35,5 +35,46 @@ jobs:
       - name: Initialize or update D1 schema
         run: npx wrangler d1 execute starsvideosync_db --remote --file=./schema.sql
 
+      - name: Ensure token encryption key
+        shell: bash
+        env:
+          TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
+        run: |
+          set -euo pipefail
+          if npx wrangler secret list | grep -q '"name": "TOKEN_ENCRYPTION_KEY"'; then
+            echo "TOKEN_ENCRYPTION_KEY already exists in Cloudflare; keeping the existing key."
+          elif [ -n "${TOKEN_ENCRYPTION_KEY:-}" ]; then
+            printf '%s' "$TOKEN_ENCRYPTION_KEY" | npx wrangler secret put TOKEN_ENCRYPTION_KEY
+          else
+            openssl rand -base64 32 | tr -d '\n' | npx wrangler secret put TOKEN_ENCRYPTION_KEY
+            echo "Generated TOKEN_ENCRYPTION_KEY directly in the deployment runner and stored it in Cloudflare."
+          fi
+
+      - name: Sync platform secrets to Cloudflare
+        shell: bash
+        env:
+          ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GJW_CLIENT_ID: ${{ secrets.GJW_CLIENT_ID }}
+          GJW_CLIENT_SECRET: ${{ secrets.GJW_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          put_if_present() {
+            local name="$1"
+            local value="$2"
+            if [ -n "$value" ]; then
+              printf '%s' "$value" | npx wrangler secret put "$name"
+              echo "Synced $name to Cloudflare."
+            else
+              echo "Skipped $name because the GitHub secret is not configured yet."
+            fi
+          }
+          put_if_present ADMIN_EMAIL "$ADMIN_EMAIL"
+          put_if_present GOOGLE_CLIENT_ID "$GOOGLE_CLIENT_ID"
+          put_if_present GOOGLE_CLIENT_SECRET "$GOOGLE_CLIENT_SECRET"
+          put_if_present GJW_CLIENT_ID "$GJW_CLIENT_ID"
+          put_if_present GJW_CLIENT_SECRET "$GJW_CLIENT_SECRET"
+
       - name: Deploy production Worker
         run: npx wrangler deploy
