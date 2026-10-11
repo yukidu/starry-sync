@@ -9,11 +9,10 @@ binding = "ASSETS"
 not_found_handling = "single-page-application"
 run_worker_first = ["/api/*"]
 
-# 建立 D1 後填入真實 database_id
 [[d1_databases]]
 binding = "DB"
 database_name = "starsvideosync_db"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "4df9cafb-0659-435a-ac67-ca57c4d82f78"
 
 [vars]
 APP_NAME = "StarsVideoSync"
