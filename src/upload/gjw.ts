@@ -11,7 +11,7 @@ export async function uploadGjwPoster(file: File, uploadToken: string) {
     },
     body,
   });
-  const data = await response.json();
+  const data: any = await response.json();
   if (!response.ok) throw new Error(data?.message || 'Gan Jing World 縮圖上傳失敗');
   const images = data?.body?.image_url || {};
   const values = typeof images === 'object' ? images : {};
