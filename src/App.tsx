@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Circle, CloudUpload, ExternalLink, LogIn, RefreshCw, Youtube } from 'lucide-react';
+import { CheckCircle2, Circle, CloudUpload, ExternalLink, LogIn, RefreshCw, Video } from 'lucide-react';
 import { api } from './api';
 import { uploadYoutubeFile, uploadYoutubeThumbnail } from './upload/youtube';
 import { uploadGjwPoster, uploadGjwVideo } from './upload/gjw';
@@ -122,7 +122,7 @@ export default function App() {
     <section className="panel connections">
       <h2>① 連接平台</h2>
       <div className="connection-grid">
-        <Connection name="YouTube" connected={!!status?.youtube.connected} detail={status?.youtube.channelTitle} href="/api/auth/youtube/start" icon={<Youtube size={22}/>} />
+        <Connection name="YouTube" connected={!!status?.youtube.connected} detail={status?.youtube.channelTitle} href="/api/auth/youtube/start" icon={<Video size={22}/>} />
         <Connection name="Gan Jing World" connected={!!status?.gjw.connected} detail={status?.gjw.channelName} href="/api/auth/gjw/start" icon={<CloudUpload size={22}/>} />
         <div className="connection"><div className="connection-title"><CheckCircle2 size={22}/><strong>Odysee</strong></div><span className="badge neutral">YouTube Sync</span><p>本系統不搬運第三份影片，讓 Odysee 官方同步 YouTube，節省流量。</p></div>
       </div>
