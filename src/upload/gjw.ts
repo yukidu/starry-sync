@@ -1,5 +1,42 @@
 import * as tus from 'tus-js-client';
 
+function collectUrls(value: unknown, path = '', out: Array<{ path: string; url: string }> = []) {
+  if (typeof value === 'string') {
+    if (/^https?:\/\//i.test(value)) out.push({ path, url: value });
+    return out;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => collectUrls(item, `${path}[${index}]`, out));
+    return out;
+  }
+  if (value && typeof value === 'object') {
+    Object.entries(value as Record<string, unknown>).forEach(([key, item]) => {
+      collectUrls(item, path ? `${path}.${key}` : key, out);
+    });
+  }
+  return out;
+}
+
+function chooseImageUrl(
+  images: unknown,
+  preferredKeys: string[],
+  preferWebp = true,
+) {
+  const urls = collectUrls(images);
+  if (!urls.length) return undefined;
+
+  for (const key of preferredKeys) {
+    const keyPattern = new RegExp(`(^|[._\\[\\]-])${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([._\\]\\-]|$)`, 'i');
+    const matches = urls.filter(item => keyPattern.test(item.path) || keyPattern.test(item.url));
+    if (!matches.length) continue;
+    const webp = preferWebp ? matches.find(item => /\.webp(?:$|\?)/i.test(item.url)) : undefined;
+    return (webp || matches[0]).url;
+  }
+
+  const webp = preferWebp ? urls.find(item => /\.webp(?:$|\?)/i.test(item.url)) : undefined;
+  return (webp || urls[0]).url;
+}
+
 export async function uploadGjwPoster(file: File, uploadToken: string) {
   const body = new FormData();
   body.append('file', file);
@@ -11,14 +48,27 @@ export async function uploadGjwPoster(file: File, uploadToken: string) {
     },
     body,
   });
-  const data: any = await response.json();
-  if (!response.ok) throw new Error(data?.message || 'Gan Jing World 縮圖上傳失敗');
-  const images = data?.body?.image_url || {};
-  const values = typeof images === 'object' ? images : {};
-  const pick = (...keys: string[]) => keys.map(k => values[k]).find(Boolean);
-  const posterUrl = pick('672', '480', '580', '360', '240', '140');
-  const posterHdUrl = pick('origin', '1920', '1280', '960', '672');
-  if (!posterUrl || !posterHdUrl) throw new Error('Gan Jing World 沒有回傳可用縮圖網址');
+
+  const text = await response.text();
+  let data: any;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`Gan Jing World 縮圖服務回傳非 JSON (${response.status})`);
+  }
+
+  if (!response.ok) throw new Error(data?.message || data?.body?.message || `Gan Jing World 縮圖上傳失敗 (${response.status})`);
+
+  // GJW CDN 文件指定網址位於 body.image_url；實際回應可能是 object、array，
+  // 且同一尺寸可能同時有 jpg/webp，因此不要假設固定 JSON 形狀。
+  const images = data?.body?.image_url ?? data?.data?.body?.image_url ?? data?.data?.image_url ?? data?.image_url;
+  const posterUrl = chooseImageUrl(images, ['672', '480', '580', '360', '240', '140']);
+  const posterHdUrl = chooseImageUrl(images, ['origin', '1920', '1280', '960', '672']);
+
+  if (!posterUrl || !posterHdUrl) {
+    const keys = images && typeof images === 'object' ? Object.keys(images).slice(0, 12).join(', ') : typeof images;
+    throw new Error(`Gan Jing World 沒有回傳可用縮圖網址（image_url: ${keys || 'empty'}）`);
+  }
   return { posterUrl, posterHdUrl };
 }
 
