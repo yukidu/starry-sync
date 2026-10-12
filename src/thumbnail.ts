@@ -114,23 +114,25 @@ async function withVideo<T>(file: File, run: (video: HTMLVideoElement) => Promis
 }
 
 function candidatePlan(count: number) {
-  if (count !== 12) {
-    return Array.from({ length: count }, (_, i) => ({ ratio: count === 1 ? 0.5 : i / (count - 1), role: 'content' as const }));
+  if (count <= 1) return [{ ratio: 0.5, role: 'content' as const }];
+  if (count < 12) {
+    return Array.from({ length: count }, (_, i) => ({ ratio: i / (count - 1), role: 'content' as const }));
   }
-  return [
-    { ratio: 0.01, role: 'intro' as const },
-    { ratio: 0.04, role: 'intro' as const },
-    { ratio: 0.12, role: 'content' as const },
-    { ratio: 0.22, role: 'content' as const },
-    { ratio: 0.32, role: 'content' as const },
-    { ratio: 0.43, role: 'content' as const },
-    { ratio: 0.56, role: 'content' as const },
-    { ratio: 0.69, role: 'content' as const },
-    { ratio: 0.79, role: 'content' as const },
-    { ratio: 0.88, role: 'content' as const },
-    { ratio: 0.95, role: 'outro' as const },
-    { ratio: 0.99, role: 'outro' as const },
-  ];
+
+  const introRatios = [0.01, 0.025, 0.05];
+  const outroRatios = [0.95, 0.975, 0.99];
+  const introCount = Math.min(3, Math.max(2, Math.floor(count / 12)));
+  const outroCount = introCount;
+  const contentCount = Math.max(0, count - introCount - outroCount);
+  const plan: Array<{ ratio: number; role: 'intro' | 'content' | 'outro' }> = [];
+
+  for (let i = 0; i < introCount; i++) plan.push({ ratio: introRatios[Math.min(i, introRatios.length - 1)], role: 'intro' });
+  for (let i = 0; i < contentCount; i++) {
+    const ratio = contentCount === 1 ? 0.5 : 0.08 + (0.84 * i) / (contentCount - 1);
+    plan.push({ ratio, role: 'content' });
+  }
+  for (let i = 0; i < outroCount; i++) plan.push({ ratio: outroRatios[Math.max(0, outroRatios.length - outroCount + i)], role: 'outro' });
+  return plan;
 }
 
 export async function extractThumbnailCandidates(file: File, count = 12): Promise<ThumbnailCandidate[]> {
