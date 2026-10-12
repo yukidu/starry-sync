@@ -18,7 +18,7 @@ export async function uploadFacebookReelLocal(
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
     xhr.upload.onprogress = event => {
       if (!event.lengthComputable) return;
-      onProgress(Math.max(1, Math.min(99, (event.loaded / event.total) * 100));
+      onProgress(Math.max(1, Math.min(99, (event.loaded / event.total) * 100)));
     };
     xhr.onerror = () => reject(new Error('Facebook Reels 上傳網路錯誤'));
     xhr.onload = () => {
