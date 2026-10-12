@@ -1,6 +1,23 @@
 export type YoutubeOption = { id: string; title: string };
 export type YoutubeOptions = { playlists: YoutubeOption[]; categories: YoutubeOption[] };
 
+export async function createYoutubePlaylist(
+  title: string,
+  privacyStatus: 'private' | 'unlisted' | 'public' = 'private',
+  description = '',
+) {
+  const response = await fetch('/api/youtube/playlists', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title, privacyStatus, description }),
+  });
+  const data: any = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data?.error || `YouTube 建立播放清單失敗 (${response.status})`);
+  }
+  return { id: String(data.id || ''), title: String(data.title || title) };
+}
+
 export async function youtubePostProcess(videoId: string, playlistId?: string) {
   if (!playlistId) return;
   const response = await fetch('/api/youtube/postprocess', {
