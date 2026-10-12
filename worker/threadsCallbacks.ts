@@ -5,6 +5,10 @@ type ThreadsCallbackEnv = {
 
 const jsonHeaders = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };
 
+type CallbackValidation =
+  | { error: Response; payload?: never }
+  | { payload: any; error?: never };
+
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: jsonHeaders });
 }
@@ -59,7 +63,7 @@ async function readSignedRequest(request: Request) {
   return params.get('signed_request') || '';
 }
 
-async function validateCallback(request: Request, env: ThreadsCallbackEnv) {
+async function validateCallback(request: Request, env: ThreadsCallbackEnv): Promise<CallbackValidation> {
   if (!env.THREADS_APP_SECRET) return { error: json({ error: 'Threads App Secret 尚未設定' }, 503) };
   const signedRequest = await readSignedRequest(request);
   if (!signedRequest) return { error: json({ error: '缺少 signed_request' }, 400) };
@@ -77,7 +81,7 @@ async function uninstallCallback(request: Request, env: ThreadsCallbackEnv) {
   if (request.method === 'GET') return json({ ok: true, callback: 'threads-uninstall' });
   if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
   const checked = await validateCallback(request, env);
-  if ('error' in checked) return checked.error;
+  if (checked.error) return checked.error;
   await deleteThreadsTokens(env);
   return json({ ok: true });
 }
@@ -86,7 +90,7 @@ async function deletionCallback(request: Request, env: ThreadsCallbackEnv) {
   if (request.method === 'GET') return json({ ok: true, callback: 'threads-data-deletion' });
   if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
   const checked = await validateCallback(request, env);
-  if ('error' in checked) return checked.error;
+  if (checked.error) return checked.error;
   await deleteThreadsTokens(env);
   const confirmationCode = crypto.randomUUID();
   const origin = new URL(request.url).origin;
