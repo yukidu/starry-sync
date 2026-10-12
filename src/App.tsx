@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Circle, CloudUpload, ExternalLink, LogIn, RefreshCw, Video } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { CheckCircle2, Circle, CloudUpload, ExternalLink, LogIn, RefreshCw, Sparkles, Video } from 'lucide-react';
 import { api } from './api';
+import { extractThumbnailCandidates, renderThumbnailFile } from './thumbnail';
 import { uploadYoutubeFile, uploadYoutubeThumbnail } from './upload/youtube';
 import { uploadGjwPoster, uploadGjwVideo } from './upload/gjw';
 
@@ -12,6 +13,7 @@ type Status = {
 };
 
 type PlatformProgress = { state: 'idle'|'waiting'|'uploading'|'processing'|'done'|'error'; pct: number; message?: string; url?: string };
+type ThumbnailState = 'idle'|'extracting'|'ai'|'ready'|'fallback'|'error';
 
 const emptyProgress: PlatformProgress = { state: 'idle', pct: 0 };
 
@@ -19,6 +21,10 @@ export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [video, setVideo] = useState<File | null>(null);
   const [thumbnail, setThumbnail] = useState<File | null>(null);
+  const [thumbnailPreview, setThumbnailPreview] = useState('');
+  const [thumbnailState, setThumbnailState] = useState<ThumbnailState>('idle');
+  const [thumbnailMessage, setThumbnailMessage] = useState('選擇影片後會自動分析');
+  const thumbnailJob = useRef(0);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [tags, setTags] = useState('');
@@ -34,14 +40,72 @@ export default function App() {
 
   const refreshStatus = () => api<Status>('/api/status').then(setStatus).catch(() => setStatus({ authenticated:false, youtube:{connected:false}, gjw:{connected:false} }));
   useEffect(() => { refreshStatus(); }, []);
+  useEffect(() => () => { if (thumbnailPreview) URL.revokeObjectURL(thumbnailPreview); }, [thumbnailPreview]);
 
   const canPublish = useMemo(() => !!video && !!thumbnail && !!title.trim() && status?.youtube.connected && status?.gjw.connected && !busy, [video, thumbnail, title, status, busy]);
+  const thumbnailBusy = thumbnailState === 'extracting' || thumbnailState === 'ai';
 
   async function getYoutubeAccessToken() {
     return (await api<{ accessToken: string }>('/api/youtube/access-token')).accessToken;
   }
   async function getGjwUploadToken() {
     return (await api<{ uploadToken: string }>('/api/gjw/upload-token')).uploadToken;
+  }
+
+  async function analyzeThumbnail(file: File) {
+    const job = ++thumbnailJob.current;
+    setThumbnail(null);
+    setThumbnailState('extracting');
+    setThumbnailMessage('正在從影片擷取候選畫面…');
+    try {
+      const candidates = await extractThumbnailCandidates(file, 12);
+      if (job !== thumbnailJob.current) return;
+      const shortlist = [...candidates].sort((a, b) => b.localScore - a.localScore).slice(0, 4);
+      if (!shortlist.length) throw new Error('影片中找不到可用畫面');
+
+      let winner = shortlist[0];
+      let usedAi = false;
+      setThumbnailState('ai');
+      setThumbnailMessage('Cloudflare AI 正在挑選最適合的封面…');
+      try {
+        const selected = await api<{ index: number; scores: number[]; confidence?: number }>('/api/thumbnail/select', {
+          method: 'POST',
+          body: JSON.stringify({ frames: shortlist.map(frame => ({ image: frame.preview, at: frame.at })) }),
+        });
+        if (Number.isInteger(selected.index) && selected.index >= 0 && selected.index < shortlist.length) {
+          winner = shortlist[selected.index];
+          usedAi = true;
+        }
+      } catch (aiError) {
+        console.warn('Cloudflare AI thumbnail selection failed; using local fallback.', aiError);
+      }
+
+      if (job !== thumbnailJob.current) return;
+      const fileOut = await renderThumbnailFile(file, winner.at);
+      if (job !== thumbnailJob.current) return;
+      setThumbnail(fileOut);
+      setThumbnailPreview(URL.createObjectURL(fileOut));
+      setThumbnailState(usedAi ? 'ready' : 'fallback');
+      setThumbnailMessage(usedAi ? 'AI 已自動選好封面，可直接發布' : 'AI 暫時不可用，已自動使用本機評分最佳畫面');
+    } catch (error) {
+      if (job !== thumbnailJob.current) return;
+      setThumbnail(null);
+      setThumbnailState('error');
+      setThumbnailMessage(error instanceof Error ? error.message : '自動產生封面失敗');
+    }
+  }
+
+  async function handleVideoSelection(file: File | null) {
+    thumbnailJob.current++;
+    setVideo(file);
+    setThumbnail(null);
+    setThumbnailPreview('');
+    if (!file) {
+      setThumbnailState('idle');
+      setThumbnailMessage('選擇影片後會自動分析');
+      return;
+    }
+    await analyzeThumbnail(file);
   }
 
   async function publish() {
@@ -80,7 +144,7 @@ export default function App() {
     const gjwTask = (async () => {
       try {
         const uploadToken = await getGjwUploadToken();
-        setGjw({ state:'uploading', pct:1, message:'上傳縮圖' });
+        setGjw({ state:'uploading', pct:1, message:'上傳 AI 自動封面' });
         const poster = await uploadGjwPoster(thumbnail, uploadToken);
         const created = await api<{ contentId:string; channelId:string }>('/api/gjw/create-video', {
           method:'POST', body: JSON.stringify({ ...metadata, ...poster })
@@ -131,8 +195,12 @@ export default function App() {
     <section className="panel">
       <h2>② 選擇影片與資料</h2>
       <div className="form-grid">
-        <label className="filebox"><span>影片母片</span><input type="file" accept="video/*" onChange={e=>setVideo(e.target.files?.[0]||null)}/><b>{video ? `${video.name} · ${(video.size/1024/1024).toFixed(1)} MB` : '選擇影片'}</b></label>
-        <label className="filebox"><span>縮圖</span><input type="file" accept="image/*" onChange={e=>setThumbnail(e.target.files?.[0]||null)}/><b>{thumbnail?.name || '選擇縮圖'}</b></label>
+        <label className="filebox"><span>影片母片</span><input type="file" accept="video/*" onChange={e=>void handleVideoSelection(e.target.files?.[0]||null)}/><b>{video ? `${video.name} · ${(video.size/1024/1024).toFixed(1)} MB` : '選擇影片'}</b></label>
+        <div className={`thumbnail-auto ${thumbnailState}`}>
+          <div className="thumbnail-title"><span>封面縮圖</span><b><Sparkles size={15}/> AI 自動挑選</b></div>
+          {thumbnailPreview ? <img className="thumbnail-preview" src={thumbnailPreview} alt="AI 自動挑選封面"/> : <div className="thumbnail-empty"><Sparkles size={24}/><span>{thumbnailBusy ? '分析中…' : '選影片後自動產生'}</span></div>}
+          <div className="thumbnail-meta"><span>{thumbnailMessage}</span>{video && <button type="button" className="small-button" disabled={thumbnailBusy || busy} onClick={()=>void analyzeThumbnail(video)}>重新分析</button>}</div>
+        </div>
         <label className="wide">標題<input value={title} onChange={e=>setTitle(e.target.value)} maxLength={100}/></label>
         <label className="wide">說明<textarea value={description} onChange={e=>setDescription(e.target.value)} rows={5}/></label>
         <label className="wide">標籤（用逗號分隔）<input value={tags} onChange={e=>setTags(e.target.value)} placeholder="繁星回聲, 學習, 分享"/></label>
@@ -145,12 +213,12 @@ export default function App() {
     </section>
 
     <section className="panel">
-      <div className="publish-head"><h2>③ 一鍵發佈</h2><button className="primary" disabled={!canPublish} onClick={publish}>{busy ? '正在發佈…' : '發布到所有平台'}</button></div>
+      <div className="publish-head"><h2>③ 一鍵發佈</h2><button className="primary" disabled={!canPublish} onClick={publish}>{busy ? '正在發佈…' : thumbnailBusy ? '正在挑選封面…' : '發布到所有平台'}</button></div>
       {!status?.authenticated && <div className="notice"><LogIn size={18}/>第一次使用請先連接 YouTube；只有指定管理員帳號可以操作。</div>}
       <Progress name="YouTube" data={yt}/><Progress name="Gan Jing World" data={gjw}/><Progress name="Odysee" data={odysee}/>
     </section>
 
-    <footer>影片檔本體不經過 StarsVideoSync 的 Cloudflare Worker；Worker 只處理授權、少量 metadata 與工作狀態。</footer>
+    <footer>影片檔本體不經過 StarsVideoSync 的 Cloudflare Worker；自動封面只會把最多 4 張低解析候選畫面交給 Workers AI 判斷，最後縮圖仍在你的瀏覽器產生。</footer>
   </main>
 }
 

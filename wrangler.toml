@@ -1,5 +1,5 @@
 name = "starsvideosync"
-main = "worker/index.ts"
+main = "worker/aiRouter.ts"
 compatibility_date = "2026-10-01"
 compatibility_flags = ["nodejs_compat"]
 
@@ -13,6 +13,9 @@ run_worker_first = ["/api/*"]
 binding = "DB"
 database_name = "starsvideosync_db"
 database_id = "4df9cafb-0659-435a-ac67-ca57c4d82f78"
+
+[ai]
+binding = "AI"
 
 [vars]
 APP_NAME = "StarsVideoSync"
