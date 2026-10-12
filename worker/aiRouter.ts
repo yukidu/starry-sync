@@ -1,6 +1,7 @@
 import app from './index';
 import { facebookReelFinishRoute } from './facebookReel';
 import { socialRoute } from './social';
+import { threadsCallbackRoute } from './threadsCallbacks';
 
 type AiEnv = {
   DB: D1Database;
@@ -170,6 +171,8 @@ export default {
       if (url.pathname === '/api/thumbnail/select') return await selectThumbnail(request, env);
       const facebookFinish = await facebookReelFinishRoute(request, env);
       if (facebookFinish) return facebookFinish;
+      const threadsCallback = await threadsCallbackRoute(request, env);
+      if (threadsCallback) return threadsCallback;
       const social = await socialRoute(request, env);
       if (social) return social;
       return app.fetch(request, env as any);
