@@ -1,4 +1,5 @@
 import app from './index';
+import { facebookReelFinishRoute } from './facebookReel';
 import { socialRoute } from './social';
 
 type AiEnv = {
@@ -167,6 +168,8 @@ export default {
     try {
       const url = new URL(request.url);
       if (url.pathname === '/api/thumbnail/select') return await selectThumbnail(request, env);
+      const facebookFinish = await facebookReelFinishRoute(request, env);
+      if (facebookFinish) return facebookFinish;
       const social = await socialRoute(request, env);
       if (social) return social;
       return app.fetch(request, env as any);
