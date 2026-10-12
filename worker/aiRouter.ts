@@ -129,7 +129,7 @@ async function selectThumbnail(request: Request, env: AiEnv) {
   const answer = result?.answers?.best_thumbnail || {};
   const index = normalizeChoice(answer, frames.length);
   const rawProbabilities = answer?.probabilities || answer?.scores || answer?.options || {};
-  const scores = frames.map((_: unknown, i: number) => {
+  const scores: number[] = frames.map((_: unknown, i: number) => {
     const raw = rawProbabilities?.[`frame_${i}`];
     if (typeof raw === 'number') return raw;
     const value = Number(raw?.probability ?? raw?.score ?? 0);
