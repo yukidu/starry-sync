@@ -3,6 +3,10 @@ main = "worker/aiRouter.ts"
 compatibility_date = "2026-10-01"
 compatibility_flags = ["nodejs_compat"]
 
+[[routes]]
+pattern = "sync.starry.phd"
+custom_domain = true
+
 [assets]
 directory = "./dist"
 binding = "ASSETS"
