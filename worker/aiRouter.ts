@@ -68,17 +68,27 @@ function normalizeChoice(answer: any, optionCount: number) {
   return 0;
 }
 
+function uniqueIndexes(values: number[], optionCount: number) {
+  const seen = new Set<number>();
+  return values.filter(index => {
+    if (!Number.isInteger(index) || index < 0 || index >= optionCount || seen.has(index)) return false;
+    seen.add(index);
+    return true;
+  });
+}
+
 async function selectThumbnail(request: Request, env: AiEnv) {
   if (request.method.toUpperCase() !== 'POST') return json({ error: 'Method not allowed' }, 405);
   if (!(await isAdmin(request, env))) return json({ error: '請先用指定管理員帳號登入' }, 401);
 
   const body: any = await request.json().catch(() => null);
-  const frames = Array.isArray(body?.frames) ? body.frames.slice(0, 4) : [];
+  const frames = Array.isArray(body?.frames) ? body.frames.slice(0, 12) : [];
   if (!frames.length) return json({ error: '缺少候選縮圖' }, 400);
 
   const images: string[] = [];
   const criteria: Record<string, string> = {};
   const times: number[] = [];
+  const localScores: number[] = [];
 
   for (let i = 0; i < frames.length; i++) {
     const image = String(frames[i]?.image || '');
@@ -88,20 +98,21 @@ async function selectThumbnail(request: Request, env: AiEnv) {
     if (image.length > 4_500_000) return json({ error: `第 ${i + 1} 張候選縮圖太大` }, 413);
     images.push(image);
     times.push(Number(frames[i]?.at || 0));
+    localScores.push(Number(frames[i]?.localScore || 0));
     criteria[`frame_${i}`] = `Image ${i + 1}: choose this when it is the strongest thumbnail.`;
   }
 
   const result: any = await env.AI.run('@cf/cloudflare/clef-flash', {
     model: 'clef-flash',
     state: {
-      task: 'Choose the single best video thumbnail from the attached images in the same order as the options.',
+      task: 'Rank the attached video frames as thumbnail candidates. The choice probabilities should reflect thumbnail quality across all attached images.',
       priorities: [
         'clear and sharp subject',
         'good facial expression when people are present',
         'good lighting and contrast',
         'visually interesting composition',
         'avoid blur, closed eyes, awkward gestures, transition frames, black frames, slides dominated by tiny text, or duplicated-looking frames',
-        'prefer a frame that would still read well as a small YouTube thumbnail',
+        'prefer frames that remain readable as small YouTube thumbnails',
       ],
       frame_times_seconds: times,
     },
@@ -109,7 +120,7 @@ async function selectThumbnail(request: Request, env: AiEnv) {
     questions: {
       best_thumbnail: {
         type: 'choice',
-        instructions: 'Which attached image is the best thumbnail for this video? Pick exactly one option.',
+        instructions: 'Which attached image is the best thumbnail for this video? Pick exactly one option and score the alternatives by suitability.',
         criteria,
       },
     },
@@ -125,8 +136,20 @@ async function selectThumbnail(request: Request, env: AiEnv) {
     return Number.isFinite(value) ? value : 0;
   });
 
+  const aiRanked = scores
+    .map((score, i) => ({ i, score }))
+    .filter(item => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map(item => item.i);
+  const localRanked = localScores
+    .map((score, i) => ({ i, score }))
+    .sort((a, b) => b.score - a.score)
+    .map(item => item.i);
+  const recommendedIndexes = uniqueIndexes([index, ...aiRanked, ...localRanked], frames.length).slice(0, Math.min(4, frames.length));
+
   return json({
     index,
+    recommendedIndexes,
     scores,
     confidence: Number(answer?.confidence || 0) || undefined,
     model: result?.model || '@cf/cloudflare/clef-flash',
