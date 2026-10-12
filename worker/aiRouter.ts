@@ -1,4 +1,5 @@
 import app from './index';
+import { socialRoute } from './social';
 
 type AiEnv = {
   DB: D1Database;
@@ -6,6 +7,12 @@ type AiEnv = {
   APP_NAME: string;
   ADMIN_EMAIL: string;
   AI: any;
+  TOKEN_ENCRYPTION_KEY: string;
+  META_APP_ID?: string;
+  META_APP_SECRET?: string;
+  THREADS_APP_ID?: string;
+  THREADS_APP_SECRET?: string;
+  META_GRAPH_VERSION?: string;
 };
 
 const SESSION = 'svs_session';
@@ -160,8 +167,11 @@ export default {
     try {
       const url = new URL(request.url);
       if (url.pathname === '/api/thumbnail/select') return await selectThumbnail(request, env);
+      const social = await socialRoute(request, env);
+      if (social) return social;
       return app.fetch(request, env as any);
     } catch (error) {
+      if (error instanceof Response) return error;
       console.error(error);
       return json({ error: error instanceof Error ? error.message : 'Unexpected error' }, 500);
     }
