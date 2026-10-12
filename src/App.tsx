@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { CheckCircle2, Circle, CloudUpload, ExternalLink, LogIn, RefreshCw, Sparkles, Video } from 'lucide-react';
+import { CheckCircle2, Circle, CloudUpload, ExternalLink, LogIn, Plus, RefreshCw, Sparkles, Video } from 'lucide-react';
 import { api } from './api';
+import FancySelect from './FancySelect';
 import { extractThumbnailCandidates, renderThumbnailFile, type ThumbnailCandidate } from './thumbnail';
 import { uploadYoutubeFile, uploadYoutubeThumbnail } from './upload/youtube';
 import { uploadGjwPoster, uploadGjwVideo } from './upload/gjw';
-import { uploadYoutubeCaption, youtubePostProcess, type YoutubeOptions } from './youtubeStudio';
+import { createYoutubePlaylist, uploadYoutubeCaption, youtubePostProcess, type YoutubeOptions } from './youtubeStudio';
 
 type Status = {
   authenticated: boolean;
@@ -16,6 +17,7 @@ type Status = {
 type PlatformProgress = { state: 'idle'|'waiting'|'uploading'|'processing'|'done'|'error'; pct: number; message?: string; url?: string };
 type ThumbnailState = 'idle'|'extracting'|'ai'|'ready'|'fallback'|'error';
 type VisibilityMode = 'private'|'unlisted'|'public'|'schedule';
+type PlaylistPrivacy = 'private'|'unlisted'|'public';
 
 type AiPreferences = {
   introOutro: boolean;
@@ -26,12 +28,44 @@ type AiPreferences = {
   custom: string;
 };
 
+type CompatibleCategory = {
+  id: string;
+  title: string;
+  gjwId: string;
+  gjwTitle: string;
+};
+
 const emptyProgress: PlatformProgress = { state: 'idle', pct: 0 };
-const fallbackCategories = [
-  { id:'22', title:'People & Blogs' }, { id:'27', title:'Education' }, { id:'26', title:'Howto & Style' },
-  { id:'24', title:'Entertainment' }, { id:'28', title:'Science & Technology' }, { id:'10', title:'Music' },
+const compatibleCategories: CompatibleCategory[] = [
+  { id:'22', title:'人物與網誌', gjwId:'cat13', gjwTitle:'文化／一般' },
+  { id:'27', title:'教育', gjwId:'cat7', gjwTitle:'教育' },
+  { id:'26', title:'教學與生活風格', gjwId:'cat15', gjwTitle:'生活風格' },
+  { id:'10', title:'音樂', gjwId:'cat17', gjwTitle:'音樂' },
+  { id:'15', title:'寵物與動物', gjwId:'cat21', gjwTitle:'寵物' },
+  { id:'17', title:'運動', gjwId:'cat25', gjwTitle:'運動' },
+  { id:'19', title:'旅遊與活動', gjwId:'cat27', gjwTitle:'旅遊' },
+  { id:'1', title:'電影與動畫', gjwId:'cat2', gjwTitle:'藝術與設計' },
 ];
+const fallbackCategories = compatibleCategories.map(({ id, title }) => ({ id, title }));
 const neutralPreferences: AiPreferences = { introOutro:false, faces:false, sharpness:false, lighting:false, lowText:false, custom:'' };
+
+function todayLocal() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatTime(seconds: number) {
+  const safe = Math.max(0, Number.isFinite(seconds) ? seconds : 0);
+  const hours = Math.floor(safe / 3600);
+  const minutes = Math.floor((safe % 3600) / 60);
+  const secs = Math.floor(safe % 60);
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2,'0')}:${String(secs).padStart(2,'0')}`
+    : `${minutes}:${String(secs).padStart(2,'0')}`;
+}
 
 export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -47,6 +81,10 @@ export default function App() {
   const [thumbnailMessage, setThumbnailMessage] = useState('選擇影片後會自動分析');
   const thumbnailJob = useRef(0);
   const thumbnailSelectionJob = useRef(0);
+  const manualVideoRef = useRef<HTMLVideoElement>(null);
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [manualTime, setManualTime] = useState(0);
+  const [manualCaptureBusy, setManualCaptureBusy] = useState(false);
 
   const [aiPreferences, setAiPreferences] = useState<AiPreferences>({ introOutro:true, faces:true, sharpness:true, lighting:true, lowText:true, custom:'' });
   const [title, setTitle] = useState('');
@@ -54,15 +92,19 @@ export default function App() {
   const [tags, setTags] = useState('');
   const [language, setLanguage] = useState('zh-TW');
   const [youtubeCategory, setYoutubeCategory] = useState('22');
-  const [gjwCategory, setGjwCategory] = useState('cat13');
   const [playlistId, setPlaylistId] = useState('');
+  const [newPlaylistOpen, setNewPlaylistOpen] = useState(false);
+  const [newPlaylistTitle, setNewPlaylistTitle] = useState('');
+  const [newPlaylistPrivacy, setNewPlaylistPrivacy] = useState<PlaylistPrivacy>('private');
+  const [creatingPlaylist, setCreatingPlaylist] = useState(false);
+  const [playlistError, setPlaylistError] = useState('');
   const [madeForKids, setMadeForKids] = useState(false);
   const [containsSyntheticMedia, setContainsSyntheticMedia] = useState(false);
   const [license, setLicense] = useState<'youtube'|'creativeCommon'>('youtube');
   const [embeddable, setEmbeddable] = useState(true);
   const [publicStatsViewable, setPublicStatsViewable] = useState(true);
   const [notifySubscribers, setNotifySubscribers] = useState(true);
-  const [recordingDate, setRecordingDate] = useState('');
+  const [recordingDate, setRecordingDate] = useState(todayLocal);
   const [visibilityMode, setVisibilityMode] = useState<VisibilityMode>('private');
   const [scheduleAt, setScheduleAt] = useState('');
   const [captionFile, setCaptionFile] = useState<File | null>(null);
@@ -79,10 +121,16 @@ export default function App() {
   useEffect(() => {
     if (!status?.youtube.connected) return;
     api<YoutubeOptions>('/api/youtube/options').then(options => {
-      setYoutubeOptions({ playlists:options.playlists||[], categories:options.categories?.length ? options.categories : fallbackCategories });
+      const available = new Set((options.categories || []).map(item => item.id));
+      const filtered = compatibleCategories.filter(item => available.size === 0 || available.has(item.id)).map(({id,title}) => ({id,title}));
+      setYoutubeOptions({ playlists:options.playlists||[], categories:filtered.length ? filtered : fallbackCategories });
+      if (filtered.length && !filtered.some(item => item.id === youtubeCategory)) setYoutubeCategory(filtered[0].id);
     }).catch(() => undefined);
   }, [status?.youtube.connected]);
   useEffect(() => () => { if (thumbnailPreview) URL.revokeObjectURL(thumbnailPreview); }, [thumbnailPreview]);
+
+  const manualVideoUrl = useMemo(() => video ? URL.createObjectURL(video) : '', [video]);
+  useEffect(() => () => { if (manualVideoUrl) URL.revokeObjectURL(manualVideoUrl); }, [manualVideoUrl]);
 
   const canPublish = useMemo(() => !!video && !!thumbnail && !!title.trim() && status?.youtube.connected && status?.gjw.connected && !busy && !(visibilityMode==='schedule'&&!scheduleAt), [video, thumbnail, title, status, busy, visibilityMode, scheduleAt]);
   const thumbnailBusy = thumbnailState === 'extracting' || thumbnailState === 'ai';
@@ -90,6 +138,7 @@ export default function App() {
     const all = thumbnailCandidates.map((_, index) => index);
     return [...recommendedIndexes, ...all.filter(index => !recommendedIndexes.includes(index))];
   }, [thumbnailCandidates, recommendedIndexes]);
+  const activeCategory = compatibleCategories.find(item => item.id === youtubeCategory) || compatibleCategories[0];
 
   async function getYoutubeAccessToken() {
     return (await api<{ accessToken: string }>('/api/youtube/access-token')).accessToken;
@@ -200,9 +249,33 @@ export default function App() {
     }
   }
 
+  function scrubManualThumbnail(value: number) {
+    const time = Math.max(0, Math.min(value, videoDuration || value));
+    setManualTime(time);
+    if (manualVideoRef.current && Number.isFinite(time)) manualVideoRef.current.currentTime = time;
+  }
+
+  async function captureManualThumbnail() {
+    if (!video || thumbnailBusy || manualCaptureBusy) return;
+    setManualCaptureBusy(true);
+    thumbnailSelectionJob.current++;
+    try {
+      const fileOut = await renderThumbnailFile(video, manualTime);
+      setSelectedIndex(null);
+      setFinalThumbnail(fileOut);
+      setThumbnailState('ready');
+      setThumbnailMessage(`已使用時間軸 ${formatTime(manualTime)} 的畫面作為正式封面`);
+    } catch (error) {
+      setThumbnailMessage(error instanceof Error ? error.message : '手動擷取縮圖失敗');
+    } finally {
+      setManualCaptureBusy(false);
+    }
+  }
+
   async function handleVideoSelection(file: File | null) {
     thumbnailJob.current++; thumbnailSelectionJob.current++;
     setVideo(file); setThumbnail(null); setThumbnailPreview(''); setThumbnailCandidates([]); setRecommendedIndexes([]); setSelectedIndex(null);
+    setVideoDuration(0); setManualTime(0);
     if (!file) {
       setTitle(''); setDescription(''); setThumbnailState('idle'); setThumbnailMessage('選擇影片後會自動分析'); return;
     }
@@ -218,6 +291,29 @@ export default function App() {
     void handleVideoSelection(file);
   }
 
+  async function addPlaylist() {
+    const name = newPlaylistTitle.trim();
+    if (!name || creatingPlaylist) return;
+    setCreatingPlaylist(true);
+    setPlaylistError('');
+    try {
+      const created = await createYoutubePlaylist(name, newPlaylistPrivacy);
+      if (!created.id) throw new Error('YouTube 沒有回傳播放清單 ID');
+      setYoutubeOptions(current => ({
+        ...current,
+        playlists: [created, ...current.playlists.filter(item => item.id !== created.id)],
+      }));
+      setPlaylistId(created.id);
+      setNewPlaylistTitle('');
+      setNewPlaylistPrivacy('private');
+      setNewPlaylistOpen(false);
+    } catch (error) {
+      setPlaylistError(error instanceof Error ? error.message : '建立播放清單失敗');
+    } finally {
+      setCreatingPlaylist(false);
+    }
+  }
+
   async function publish() {
     if (!video || !thumbnail || !canPublish) return;
     setBusy(true);
@@ -229,7 +325,7 @@ export default function App() {
     const privacy = visibilityMode==='schedule' ? 'private' : visibilityMode;
     const metadata = {
       title:title.trim(), description, tags:tags.split(',').map(v=>v.trim()).filter(Boolean), language,
-      privacy, publishAt, youtubeCategory, gjwCategory, madeForKids, containsSyntheticMedia, license, embeddable,
+      privacy, publishAt, youtubeCategory, gjwCategory:activeCategory.gjwId, madeForKids, containsSyntheticMedia, license, embeddable,
       publicStatsViewable, notifySubscribers, recordingDate,
     };
 
@@ -273,6 +369,12 @@ export default function App() {
     await Promise.allSettled([youtubeTask,gjwTask]);setBusy(false);
   }
 
+  const playlistOptions = [{value:'',label:'不加入播放清單'}, ...youtubeOptions.playlists.map(item=>({value:item.id,label:item.title}))];
+  const categoryOptions = youtubeOptions.categories.map(item => {
+    const match = compatibleCategories.find(category => category.id === item.id);
+    return { value:item.id, label:item.title, hint:match ? `乾淨世界：${match.gjwTitle}` : undefined };
+  });
+
   return <main className="shell">
     <header>
       <div><div className="eyebrow">MULTI-PLATFORM PUBLISHER</div><h1>StarsVideoSync</h1><p>以 YouTube Studio 上傳流程為主，影片同時發佈到 YouTube 與 Gan Jing World；Odysee 交給官方 YouTube Sync。</p></div>
@@ -298,8 +400,42 @@ export default function App() {
       </div><label className="wide">自訂偏好<input value={aiPreferences.custom} onChange={e=>setAiPreferences(v=>({...v,custom:e.target.value}))} placeholder="例如：優先找品牌 Logo 清楚、講者正面、舞台全景的畫面" maxLength={500}/></label></div>
 
       <div className={`thumbnail-auto ${thumbnailState}`}>
-        <div className="thumbnail-title"><span>封面縮圖</span><b><Sparkles size={15}/> 偏好先選 12 張 · AI 推薦 4 張排最前 · 12 張全部可選</b></div>
+        <div className="thumbnail-title"><span>封面縮圖</span><b><Sparkles size={15}/> AI 推薦＋手動時間軸皆可使用</b></div>
         {thumbnailPreview?<img className="thumbnail-preview" src={thumbnailPreview} alt="目前選定封面"/>:<div className="thumbnail-empty"><Sparkles size={24}/><span>{thumbnailBusy?'分析中…':'選影片後自動產生'}</span></div>}
+
+        {video && manualVideoUrl && <div className="manual-thumbnail-box">
+          <div className="manual-thumbnail-head"><strong>手動時間軸抓縮圖</strong><span>{formatTime(manualTime)} / {formatTime(videoDuration)}</span></div>
+          <div className="manual-thumbnail-body">
+            <video
+              ref={manualVideoRef}
+              className="manual-thumbnail-video"
+              src={manualVideoUrl}
+              muted
+              playsInline
+              preload="metadata"
+              onLoadedMetadata={event => {
+                const duration = Number(event.currentTarget.duration || 0);
+                setVideoDuration(duration);
+                const initial = Math.min(manualTime, Math.max(0, duration - 0.05));
+                event.currentTarget.currentTime = initial;
+              }}
+            />
+            <div className="manual-thumbnail-controls">
+              <input
+                className="timeline-range"
+                type="range"
+                min="0"
+                max={Math.max(videoDuration, 0.1)}
+                step="0.1"
+                value={Math.min(manualTime, Math.max(videoDuration, 0.1))}
+                onChange={e=>scrubManualThumbnail(Number(e.target.value))}
+              />
+              <div className="timeline-labels"><span>0:00</span><span>拖曳到你要的畫面</span><span>{formatTime(videoDuration)}</span></div>
+              <button type="button" className="small-button timeline-capture" disabled={thumbnailBusy||manualCaptureBusy||busy||videoDuration<=0} onClick={()=>void captureManualThumbnail()}>{manualCaptureBusy?'擷取中…':'使用目前時間點當封面'}</button>
+            </div>
+          </div>
+        </div>}
+
         {thumbnailCandidates.length>0&&<><div className="thumbnail-gallery-title"><strong>12 張偏好候選（含片頭／片尾）</strong><span>紫框＝AI 推薦；綠框＝目前正式封面</span></div><div className="thumbnail-gallery">
           {displayIndexes.map(index=>{const candidate=thumbnailCandidates[index];const rank=recommendedIndexes.indexOf(index)+1;const selected=selectedIndex===index;return <button type="button" key={`${candidate.at}-${index}`} className={`thumbnail-candidate ${rank>0?'recommended':''} ${selected?'selected':''}`} disabled={thumbnailBusy||busy} onClick={()=>void chooseThumbnailCandidate(index)}>
             <img src={candidate.preview} alt={`候選封面 ${index+1}`}/><span className="candidate-number">#{index+1}</span>{rank>0&&<span className="candidate-rank"><Sparkles size={12}/> AI {rank}</span>}{selected&&<span className="candidate-selected"><CheckCircle2 size={13}/>目前使用</span>}<small>{candidate.role==='intro'?'片頭':candidate.role==='outro'?'片尾':'內容'} · {Math.round(candidate.at)} 秒</small>
@@ -312,20 +448,23 @@ export default function App() {
     <section className="panel studio-panel"><div className="studio-heading"><div><div className="eyebrow">YOUTUBE STUDIO MODE</div><h2>③ YouTube Studio 詳細資料</h2></div><span className="api-badge">API 可直接寫入</span></div><div className="form-grid">
       <label className="wide">標題<input value={title} onChange={e=>setTitle(e.target.value)} maxLength={100}/><small>{video?'已自動完整複製上傳檔名，可手動修改 · ':''}{title.length}/100</small></label>
       <label className="wide">說明<textarea value={description} onChange={e=>setDescription(e.target.value)} rows={7}/><small>{video?'已自動完整複製上傳檔名，可手動修改':''}</small></label>
-      <label>播放清單<select value={playlistId} onChange={e=>setPlaylistId(e.target.value)}><option value="">不加入播放清單</option>{youtubeOptions.playlists.map(item=><option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
-      <label>YouTube 分類<select value={youtubeCategory} onChange={e=>setYoutubeCategory(e.target.value)}>{youtubeOptions.categories.map(item=><option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
+
+      <div className="field-block playlist-field"><span className="field-label">播放清單</span><div className="playlist-row"><FancySelect value={playlistId} options={playlistOptions} onChange={setPlaylistId}/><button type="button" className="small-button add-playlist-button" onClick={()=>{setNewPlaylistOpen(v=>!v);setPlaylistError('');}}><Plus size={15}/>新增播放清單</button></div>
+        {newPlaylistOpen&&<div className="new-playlist-box"><input value={newPlaylistTitle} onChange={e=>setNewPlaylistTitle(e.target.value)} placeholder="新的播放清單名稱" maxLength={150}/><FancySelect value={newPlaylistPrivacy} onChange={value=>setNewPlaylistPrivacy(value as PlaylistPrivacy)} options={[{value:'private',label:'私人'},{value:'unlisted',label:'不公開列出'},{value:'public',label:'公開'}]}/><div className="new-playlist-actions"><button type="button" className="small-button" disabled={!newPlaylistTitle.trim()||creatingPlaylist} onClick={()=>void addPlaylist()}>{creatingPlaylist?'建立中…':'建立並選用'}</button><button type="button" className="text-button" onClick={()=>setNewPlaylistOpen(false)}>取消</button></div>{playlistError&&<small className="field-error">{playlistError}</small>}</div>}
+      </div>
+
+      <div className="field-block"><span className="field-label">YouTube 分類</span><FancySelect value={youtubeCategory} options={categoryOptions} onChange={setYoutubeCategory}/><small>只顯示目前可對應乾淨世界的分類；乾淨世界會自動使用「{activeCategory.gjwTitle}」，不需要再輸入內部分類 ID。</small></div>
       <label className="wide">標籤（逗號分隔）<input value={tags} onChange={e=>setTags(e.target.value)} placeholder="繁星回聲, 學習, 分享"/></label>
       <label>影片語言<input value={language} onChange={e=>setLanguage(e.target.value)} placeholder="zh-TW"/></label>
-      <label>錄製日期<input type="date" value={recordingDate} onChange={e=>setRecordingDate(e.target.value)}/></label>
+      <label>錄製日期<input type="date" value={recordingDate} onChange={e=>setRecordingDate(e.target.value)}/><small>預設為今天，可自行修改。</small></label>
       <div className="setting-card wide"><strong>觀眾</strong><Toggle checked={madeForKids} onChange={setMadeForKids} label="這是兒童內容（Made for Kids）"/></div>
       <div className="setting-card wide"><strong>變造／合成內容揭露</strong><Toggle checked={containsSyntheticMedia} onChange={setContainsSyntheticMedia} label="包含逼真的 AI 生成或變造內容"/></div>
-      <label>授權<select value={license} onChange={e=>setLicense(e.target.value as 'youtube'|'creativeCommon')}><option value="youtube">標準 YouTube 授權</option><option value="creativeCommon">Creative Commons</option></select></label>
+      <div className="field-block"><span className="field-label">授權</span><FancySelect value={license} onChange={value=>setLicense(value as 'youtube'|'creativeCommon')} options={[{value:'youtube',label:'標準 YouTube 授權'},{value:'creativeCommon',label:'Creative Commons'}]}/></div>
       <div className="setting-card"><Toggle checked={embeddable} onChange={setEmbeddable} label="允許嵌入其他網站"/></div>
       <div className="setting-card"><Toggle checked={publicStatsViewable} onChange={setPublicStatsViewable} label="公開影片統計資訊"/></div>
       <div className="setting-card"><Toggle checked={notifySubscribers} onChange={setNotifySubscribers} label="通知訂閱者"/></div>
       <label className="wide">字幕檔（可選）<input type="file" accept=".srt,.vtt,.sbv,.ttml,.xml,text/*" onChange={e=>setCaptionFile(e.target.files?.[0]||null)}/><small>{captionFile?captionFile.name:'可上傳 SRT / VTT 等字幕；此功能需要新版 YouTube 授權'}</small></label>
       {captionFile&&<><label>字幕語言<input value={captionLanguage} onChange={e=>setCaptionLanguage(e.target.value)}/></label><label>字幕名稱<input value={captionName} onChange={e=>setCaptionName(e.target.value)}/></label></>}
-      <label>Gan Jing World 分類 ID<input value={gjwCategory} onChange={e=>setGjwCategory(e.target.value)}/></label>
     </div></section>
 
     <section className="panel"><h2>④ YouTube Studio 發布設定</h2><div className="visibility-grid">
@@ -338,11 +477,10 @@ export default function App() {
 
     <section className="panel"><div className="publish-head"><h2>⑥ 一鍵發佈</h2><button className="primary" disabled={!canPublish} onClick={publish}>{busy?'正在發佈…':thumbnailBusy?'正在挑選封面…':'發布到所有平台'}</button></div>
       {!status?.authenticated&&<div className="notice"><LogIn size={18}/>第一次使用請先連接 YouTube；只有指定管理員帳號可以操作。</div>}
-      <div className="notice info">新版增加播放清單與字幕寫入權限；第一次使用 v0.9 請按一次 YouTube「重新授權」。</div>
       <Progress name="YouTube" data={yt}/><Progress name="Gan Jing World" data={gjw}/><Progress name="Odysee" data={odysee}/>
     </section>
 
-    <footer>影片檔本體不經過 StarsVideoSync Worker；瀏覽器先掃描低解析畫面，偏好搜尋會把候選收斂成 12 張，最後推薦排序只在這 12 張內進行。YouTube 官方 API 未開放的 Studio 功能會明確標示，不會偽裝成已設定。</footer>
+    <footer>影片檔本體不經過 StarsVideoSync Worker；自動縮圖與手動時間軸都在你的瀏覽器處理。乾淨世界的內部 category_id 已改成由 YouTube 中文分類自動對應，不再要求你輸入代碼。</footer>
   </main>;
 }
 
