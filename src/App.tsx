@@ -31,6 +31,7 @@ const fallbackCategories = [
   { id:'22', title:'People & Blogs' }, { id:'27', title:'Education' }, { id:'26', title:'Howto & Style' },
   { id:'24', title:'Entertainment' }, { id:'28', title:'Science & Technology' }, { id:'10', title:'Music' },
 ];
+const neutralPreferences: AiPreferences = { introOutro:false, faces:false, sharpness:false, lighting:false, lowText:false, custom:'' };
 
 export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -101,44 +102,80 @@ export default function App() {
     setThumbnailPreview(URL.createObjectURL(fileOut));
   }
 
+  function localRanking(frames: ThumbnailCandidate[]) {
+    return frames.map((candidate,index)=>({index,score:candidate.localScore})).sort((a,b)=>b.score-a.score).map(item=>item.index);
+  }
+
+  async function rankFrames(frames: ThumbnailCandidate[], preferences: AiPreferences) {
+    const localRanked = localRanking(frames);
+    try {
+      const selected = await api<{ index:number; recommendedIndexes?:number[] }>('/api/thumbnail/select', {
+        method:'POST',
+        body:JSON.stringify({
+          preferences,
+          frames:frames.map(frame=>({ image:frame.preview, at:frame.at, localScore:frame.localScore, role:frame.role })),
+        }),
+      });
+      const aiRecommended = Array.isArray(selected.recommendedIndexes) ? selected.recommendedIndexes.filter(index=>Number.isInteger(index)&&index>=0&&index<frames.length) : [];
+      const bestIndex = Number.isInteger(selected.index)&&selected.index>=0&&selected.index<frames.length ? selected.index : null;
+      const merged = [...(bestIndex===null?[]:[bestIndex]),...aiRecommended,...localRanked].filter((index,pos,values)=>values.indexOf(index)===pos);
+      return { indexes:merged, usedAi:bestIndex!==null||aiRecommended.length>0 };
+    } catch (error) {
+      console.warn('Cloudflare AI thumbnail selection failed; using local fallback.', error);
+      return { indexes:localRanked, usedAi:false };
+    }
+  }
+
   async function analyzeThumbnail(file: File) {
     const job = ++thumbnailJob.current;
     thumbnailSelectionJob.current++;
     setThumbnail(null); setThumbnailPreview(''); setThumbnailCandidates([]); setRecommendedIndexes([]); setSelectedIndex(null);
     setThumbnailState('extracting');
-    setThumbnailMessage('正在從影片擷取 12 張候選畫面（包含片頭與片尾）…');
+    setThumbnailMessage('正在廣泛掃描影片畫面，先依你的偏好建立 12 張候選…');
     try {
-      const candidates = await extractThumbnailCandidates(file, 12);
+      const pool = await extractThumbnailCandidates(file, 36);
       if (job !== thumbnailJob.current) return;
-      if (!candidates.length) throw new Error('影片中找不到可用畫面');
-      setThumbnailCandidates(candidates);
-      const localRanked = candidates.map((candidate,index)=>({index,score:candidate.localScore})).sort((a,b)=>b.score-a.score).map(item=>item.index);
-      let recommendations = localRanked.slice(0, 4);
-      let usedAi = false;
+      if (!pool.length) throw new Error('影片中找不到可用畫面');
+
       setThumbnailState('ai');
-      setThumbnailMessage('12 張候選已顯示；Cloudflare AI 正在依你的偏好選出最佳 4 張…');
-      try {
-        const selected = await api<{ index:number; recommendedIndexes?:number[] }>('/api/thumbnail/select', {
-          method:'POST',
-          body:JSON.stringify({
-            preferences:aiPreferences,
-            frames:candidates.map(frame=>({ image:frame.preview, at:frame.at, localScore:frame.localScore, role:frame.role })),
-          }),
-        });
-        const aiRecommended = Array.isArray(selected.recommendedIndexes) ? selected.recommendedIndexes.filter(index=>Number.isInteger(index)&&index>=0&&index<candidates.length) : [];
-        const bestIndex = Number.isInteger(selected.index)&&selected.index>=0&&selected.index<candidates.length ? selected.index : null;
-        const merged = [...(bestIndex===null?[]:[bestIndex]),...aiRecommended,...localRanked].filter((index,pos,values)=>values.indexOf(index)===pos).slice(0,4);
-        if (merged.length) { recommendations=merged; usedAi=bestIndex!==null||aiRecommended.length>0; }
-      } catch (error) { console.warn('Cloudflare AI thumbnail selection failed; using local fallback.', error); }
+      setThumbnailMessage('正在依勾選與自訂偏好搜尋畫面，讓符合條件的內容先進入 12 張候選…');
+      const preferredCandidates: ThumbnailCandidate[] = [];
+      let preferenceScanUsedAi = false;
+      for (let start = 0; start < pool.length; start += 12) {
+        const batch = pool.slice(start, start + 12);
+        const ranked = await rankFrames(batch, aiPreferences);
+        preferenceScanUsedAi = preferenceScanUsedAi || ranked.usedAi;
+        for (const index of ranked.indexes.slice(0, 4)) {
+          if (batch[index]) preferredCandidates.push(batch[index]);
+        }
+      }
       if (job !== thumbnailJob.current) return;
+
+      const uniquePreferred = preferredCandidates.filter((candidate,index,list)=>list.findIndex(item=>Math.abs(item.at-candidate.at)<0.01)===index);
+      if (uniquePreferred.length < 12) {
+        for (const index of localRanking(pool)) {
+          const candidate = pool[index];
+          if (!uniquePreferred.some(item=>Math.abs(item.at-candidate.at)<0.01)) uniquePreferred.push(candidate);
+          if (uniquePreferred.length >= 12) break;
+        }
+      }
+      const candidates = uniquePreferred.slice(0, 12);
+      if (!candidates.length) throw new Error('偏好篩選後找不到可用畫面');
+      setThumbnailCandidates(candidates);
+
+      setThumbnailMessage('偏好候選 12 張已完成；現在只從這 12 張裡選出 AI 推薦前 4 名…');
+      const finalRanked = await rankFrames(candidates, neutralPreferences);
+      if (job !== thumbnailJob.current) return;
+      const recommendations = finalRanked.indexes.slice(0, Math.min(4, candidates.length));
       setRecommendedIndexes(recommendations);
       const initialIndex = recommendations[0] ?? 0;
       setSelectedIndex(initialIndex);
       const fileOut = await renderThumbnailFile(file, candidates[initialIndex].at);
       if (job !== thumbnailJob.current) return;
       setFinalThumbnail(fileOut);
-      setThumbnailState(usedAi?'ready':'fallback');
-      setThumbnailMessage(usedAi ? 'AI 推薦 4 張已排到最前面；12 張全部都可以自由點選' : 'AI 暫時不可用；已用本機評分排序，12 張仍可自由點選');
+      const fullyAi = preferenceScanUsedAi && finalRanked.usedAi;
+      setThumbnailState(fullyAi?'ready':'fallback');
+      setThumbnailMessage(fullyAi ? '偏好已先套用到 12 張候選；AI 前 4 名已排最前，12 張都可自由選' : '部分 AI 分析暫時不可用；已用本機品質評分補足候選，12 張仍可自由選');
     } catch (error) {
       if (job !== thumbnailJob.current) return;
       setThumbnail(null); setThumbnailCandidates([]); setRecommendedIndexes([]); setSelectedIndex(null); setThumbnailState('error');
@@ -166,8 +203,12 @@ export default function App() {
   async function handleVideoSelection(file: File | null) {
     thumbnailJob.current++; thumbnailSelectionJob.current++;
     setVideo(file); setThumbnail(null); setThumbnailPreview(''); setThumbnailCandidates([]); setRecommendedIndexes([]); setSelectedIndex(null);
-    if (!file) { setThumbnailState('idle'); setThumbnailMessage('選擇影片後會自動分析'); return; }
+    if (!file) {
+      setTitle(''); setDescription(''); setThumbnailState('idle'); setThumbnailMessage('選擇影片後會自動分析'); return;
+    }
     if (file.type && !file.type.startsWith('video/')) { setThumbnailState('error'); setThumbnailMessage('請放入影片檔案'); return; }
+    setTitle(file.name);
+    setDescription(file.name);
     await analyzeThumbnail(file);
   }
 
@@ -248,29 +289,29 @@ export default function App() {
       <label className={`filebox wide dropzone ${dragActive?'drag-active':''}`} onDragEnter={e=>{e.preventDefault();setDragActive(true);}} onDragOver={e=>e.preventDefault()} onDragLeave={()=>setDragActive(false)} onDrop={dropVideo}>
         <span>影片母片</span><input type="file" accept="video/*" onChange={e=>void handleVideoSelection(e.target.files?.[0]||null)}/><b>{video?`${video.name} · ${(video.size/1024/1024).toFixed(1)} MB`:'點選選擇影片，或直接把影片拖曳到這裡'}</b><small>支援桌面拖曳；手機維持點選檔案。</small>
       </label>
-      <div className="preference-box wide"><div className="subhead"><strong>AI 挑選偏好</strong><span>只影響 AI 排序，不會限制你手動選圖</span></div><div className="preference-grid">
+      <div className="preference-box wide"><div className="subhead"><strong>12 張候選偏好</strong><span>先用偏好從影片找出候選，再讓 AI 只在這 12 張中選前 4 名</span></div><div className="preference-grid">
         <Toggle checked={aiPreferences.introOutro} onChange={value=>setAiPreferences(v=>({...v,introOutro:value}))} label="特別留意片頭／片尾"/>
         <Toggle checked={aiPreferences.faces} onChange={value=>setAiPreferences(v=>({...v,faces:value}))} label="人物臉部與自然表情"/>
         <Toggle checked={aiPreferences.sharpness} onChange={value=>setAiPreferences(v=>({...v,sharpness:value}))} label="清晰、避免動態模糊"/>
         <Toggle checked={aiPreferences.lighting} onChange={value=>setAiPreferences(v=>({...v,lighting:value}))} label="光線與對比良好"/>
         <Toggle checked={aiPreferences.lowText} onChange={value=>setAiPreferences(v=>({...v,lowText:value}))} label="避免密集小字投影片"/>
-      </div><label className="wide">自訂偏好<input value={aiPreferences.custom} onChange={e=>setAiPreferences(v=>({...v,custom:e.target.value}))} placeholder="例如：優先選有講者正面、舞台全景、品牌 Logo 清楚的畫面" maxLength={500}/></label></div>
+      </div><label className="wide">自訂偏好<input value={aiPreferences.custom} onChange={e=>setAiPreferences(v=>({...v,custom:e.target.value}))} placeholder="例如：優先找品牌 Logo 清楚、講者正面、舞台全景的畫面" maxLength={500}/></label></div>
 
       <div className={`thumbnail-auto ${thumbnailState}`}>
-        <div className="thumbnail-title"><span>封面縮圖</span><b><Sparkles size={15}/> AI 推薦 4 張排最前 · 12 張全部可選</b></div>
+        <div className="thumbnail-title"><span>封面縮圖</span><b><Sparkles size={15}/> 偏好先選 12 張 · AI 推薦 4 張排最前 · 12 張全部可選</b></div>
         {thumbnailPreview?<img className="thumbnail-preview" src={thumbnailPreview} alt="目前選定封面"/>:<div className="thumbnail-empty"><Sparkles size={24}/><span>{thumbnailBusy?'分析中…':'選影片後自動產生'}</span></div>}
-        {thumbnailCandidates.length>0&&<><div className="thumbnail-gallery-title"><strong>12 張候選（含片頭／片尾）</strong><span>紫框＝AI 推薦；綠框＝目前正式封面</span></div><div className="thumbnail-gallery">
+        {thumbnailCandidates.length>0&&<><div className="thumbnail-gallery-title"><strong>12 張偏好候選（含片頭／片尾）</strong><span>紫框＝AI 推薦；綠框＝目前正式封面</span></div><div className="thumbnail-gallery">
           {displayIndexes.map(index=>{const candidate=thumbnailCandidates[index];const rank=recommendedIndexes.indexOf(index)+1;const selected=selectedIndex===index;return <button type="button" key={`${candidate.at}-${index}`} className={`thumbnail-candidate ${rank>0?'recommended':''} ${selected?'selected':''}`} disabled={thumbnailBusy||busy} onClick={()=>void chooseThumbnailCandidate(index)}>
             <img src={candidate.preview} alt={`候選封面 ${index+1}`}/><span className="candidate-number">#{index+1}</span>{rank>0&&<span className="candidate-rank"><Sparkles size={12}/> AI {rank}</span>}{selected&&<span className="candidate-selected"><CheckCircle2 size={13}/>目前使用</span>}<small>{candidate.role==='intro'?'片頭':candidate.role==='outro'?'片尾':'內容'} · {Math.round(candidate.at)} 秒</small>
           </button>;})}
         </div></>}
-        <div className="thumbnail-meta"><span>{thumbnailMessage}</span>{video&&<button type="button" className="small-button" disabled={thumbnailBusy||busy} onClick={()=>void analyzeThumbnail(video)}>依目前偏好重新分析</button>}</div>
+        <div className="thumbnail-meta"><span>{thumbnailMessage}</span>{video&&<button type="button" className="small-button" disabled={thumbnailBusy||busy} onClick={()=>void analyzeThumbnail(video)}>依目前偏好重新搜尋 12 張</button>}</div>
       </div>
     </div></section>
 
     <section className="panel studio-panel"><div className="studio-heading"><div><div className="eyebrow">YOUTUBE STUDIO MODE</div><h2>③ YouTube Studio 詳細資料</h2></div><span className="api-badge">API 可直接寫入</span></div><div className="form-grid">
-      <label className="wide">標題<input value={title} onChange={e=>setTitle(e.target.value)} maxLength={100}/><small>{title.length}/100</small></label>
-      <label className="wide">說明<textarea value={description} onChange={e=>setDescription(e.target.value)} rows={7}/></label>
+      <label className="wide">標題<input value={title} onChange={e=>setTitle(e.target.value)} maxLength={100}/><small>{video?'已自動完整複製上傳檔名，可手動修改 · ':''}{title.length}/100</small></label>
+      <label className="wide">說明<textarea value={description} onChange={e=>setDescription(e.target.value)} rows={7}/><small>{video?'已自動完整複製上傳檔名，可手動修改':''}</small></label>
       <label>播放清單<select value={playlistId} onChange={e=>setPlaylistId(e.target.value)}><option value="">不加入播放清單</option>{youtubeOptions.playlists.map(item=><option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
       <label>YouTube 分類<select value={youtubeCategory} onChange={e=>setYoutubeCategory(e.target.value)}>{youtubeOptions.categories.map(item=><option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
       <label className="wide">標籤（逗號分隔）<input value={tags} onChange={e=>setTags(e.target.value)} placeholder="繁星回聲, 學習, 分享"/></label>
@@ -301,7 +342,7 @@ export default function App() {
       <Progress name="YouTube" data={yt}/><Progress name="Gan Jing World" data={gjw}/><Progress name="Odysee" data={odysee}/>
     </section>
 
-    <footer>影片檔本體不經過 StarsVideoSync Worker；12 張候選縮圖在瀏覽器產生，AI 只分析低解析候選圖。YouTube 官方 API 未開放的 Studio 功能會明確標示，不會偽裝成已設定。</footer>
+    <footer>影片檔本體不經過 StarsVideoSync Worker；瀏覽器先掃描低解析畫面，偏好搜尋會把候選收斂成 12 張，最後推薦排序只在這 12 張內進行。YouTube 官方 API 未開放的 Studio 功能會明確標示，不會偽裝成已設定。</footer>
   </main>;
 }
 
