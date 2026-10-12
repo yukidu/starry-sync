@@ -135,6 +135,21 @@ function candidatePlan(count: number) {
   return plan;
 }
 
+export async function getVideoDuration(file: File) {
+  return withVideo(file, async video => video.duration);
+}
+
+export async function renderThumbnailPreview(file: File, at: number) {
+  return withVideo(file, async video => {
+    const canvas = document.createElement('canvas');
+    canvas.width = PREVIEW_WIDTH;
+    canvas.height = PREVIEW_HEIGHT;
+    await seek(video, at);
+    drawCover(video, canvas);
+    return canvas.toDataURL('image/jpeg', 0.78);
+  });
+}
+
 export async function extractThumbnailCandidates(file: File, count = 12): Promise<ThumbnailCandidate[]> {
   return withVideo(file, async video => {
     const canvas = document.createElement('canvas');
