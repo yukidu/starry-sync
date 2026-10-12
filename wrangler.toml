@@ -20,3 +20,4 @@ binding = "AI"
 [vars]
 APP_NAME = "StarsVideoSync"
 ADMIN_EMAIL = "yukidu@gmail.com"
+META_GRAPH_VERSION = "v26.0"
