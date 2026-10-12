@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import LongVideoPage from './App';
+import LegalPage from './LegalPage';
 import MainNav, { type MainMode } from './MainNav';
 import ShortVideoPage from './ShortVideoPage';
 
@@ -8,20 +9,33 @@ function modeFromUrl(): MainMode {
   return new URLSearchParams(window.location.search).get('page') === 'short' ? 'short' : 'long';
 }
 
+function legalKindFromPath(): 'privacy'|'terms'|'data-deletion'|null {
+  if (typeof window === 'undefined') return null;
+  if (window.location.pathname === '/privacy') return 'privacy';
+  if (window.location.pathname === '/terms') return 'terms';
+  if (window.location.pathname === '/data-deletion') return 'data-deletion';
+  return null;
+}
+
 export default function RootApp() {
+  const legalKind = legalKindFromPath();
   const [mode, setMode] = useState<MainMode>(modeFromUrl);
 
   useEffect(() => {
+    if (legalKind) return;
     const sync = () => setMode(modeFromUrl());
     window.addEventListener('popstate', sync);
     return () => window.removeEventListener('popstate', sync);
-  }, []);
+  }, [legalKind]);
 
   useEffect(() => {
+    if (legalKind) return;
     document.title = mode === 'short' ? '繁星同步｜短影音' : '繁星同步｜長影音';
     document.body.dataset.videoMode = mode;
     return () => { delete document.body.dataset.videoMode; };
-  }, [mode]);
+  }, [legalKind, mode]);
+
+  if (legalKind) return <LegalPage kind={legalKind}/>;
 
   const navigate = (next: MainMode) => {
     if (next === mode) return;
