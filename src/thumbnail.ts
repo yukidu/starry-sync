@@ -2,6 +2,7 @@ export type ThumbnailCandidate = {
   at: number;
   preview: string;
   localScore: number;
+  role: 'intro' | 'content' | 'outro';
 };
 
 const PREVIEW_WIDTH = 512;
@@ -112,22 +113,40 @@ async function withVideo<T>(file: File, run: (video: HTMLVideoElement) => Promis
   }
 }
 
+function candidatePlan(count: number) {
+  if (count !== 12) {
+    return Array.from({ length: count }, (_, i) => ({ ratio: count === 1 ? 0.5 : i / (count - 1), role: 'content' as const }));
+  }
+  return [
+    { ratio: 0.01, role: 'intro' as const },
+    { ratio: 0.04, role: 'intro' as const },
+    { ratio: 0.12, role: 'content' as const },
+    { ratio: 0.22, role: 'content' as const },
+    { ratio: 0.32, role: 'content' as const },
+    { ratio: 0.43, role: 'content' as const },
+    { ratio: 0.56, role: 'content' as const },
+    { ratio: 0.69, role: 'content' as const },
+    { ratio: 0.79, role: 'content' as const },
+    { ratio: 0.88, role: 'content' as const },
+    { ratio: 0.95, role: 'outro' as const },
+    { ratio: 0.99, role: 'outro' as const },
+  ];
+}
+
 export async function extractThumbnailCandidates(file: File, count = 12): Promise<ThumbnailCandidate[]> {
   return withVideo(file, async video => {
     const canvas = document.createElement('canvas');
     canvas.width = PREVIEW_WIDTH;
     canvas.height = PREVIEW_HEIGHT;
-    const start = video.duration * 0.07;
-    const end = video.duration * 0.93;
     const frames: ThumbnailCandidate[] = [];
 
-    for (let i = 0; i < count; i++) {
-      const ratio = count === 1 ? 0.5 : i / (count - 1);
-      const at = start + (end - start) * ratio;
+    for (const item of candidatePlan(count)) {
+      const at = Math.max(0, Math.min(video.duration - 0.05, video.duration * item.ratio));
       await seek(video, at);
       const ctx = drawCover(video, canvas);
       frames.push({
         at,
+        role: item.role,
         preview: canvas.toDataURL('image/jpeg', 0.72),
         localScore: localQuality(ctx, canvas.width, canvas.height),
       });
