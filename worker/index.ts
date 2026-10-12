@@ -79,7 +79,7 @@ async function gjwUploadToken(env:Env){const access=await gjwAccess(env);const r
 async function youtubeStart(request:Request,env:Env){
   const url=new URL(request.url),state=randomToken(); await env.DB.prepare('INSERT INTO oauth_states(state,provider,expires_at) VALUES(?,?,?)').bind(state,'youtube',Date.now()+10*60*1000).run();
   const redirectUri=`${url.origin}/api/auth/youtube/callback`;
-  const q=new URLSearchParams({client_id:env.GOOGLE_CLIENT_ID,redirect_uri:redirectUri,response_type:'code',scope:'openid email profile https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly',access_type:'offline',include_granted_scopes:'true',prompt:'consent',state});
+  const q=new URLSearchParams({client_id:env.GOOGLE_CLIENT_ID,redirect_uri:redirectUri,response_type:'code',scope:'openid email profile https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube.force-ssl',access_type:'offline',include_granted_scopes:'true',prompt:'consent',state});
   return redirect(`https://accounts.google.com/o/oauth2/v2/auth?${q}`);
 }
 async function youtubeCallback(request:Request,env:Env){
@@ -93,28 +93,62 @@ async function youtubeCallback(request:Request,env:Env){
 async function gjwStart(request:Request,env:Env){await requireAdmin(request,env);const url=new URL(request.url),state=randomToken(),verifier=randomToken(48),challenge=base64url(await sha256(verifier));await env.DB.prepare('INSERT INTO oauth_states(state,provider,verifier,expires_at) VALUES(?,?,?,?)').bind(state,'gjw',verifier,Date.now()+10*60*1000).run();const q=new URLSearchParams({client_id:env.GJW_CLIENT_ID,redirect_uri:`${url.origin}/api/auth/gjw/callback`,response_type:'code',state,code_challenge:challenge,code_challenge_method:'S256'});return redirect(`https://www.ganjingworld.com/v1/oauth2/authorize?${q}`);}
 async function gjwCallback(request:Request,env:Env){const url=new URL(request.url),state=url.searchParams.get('state')||'',code=url.searchParams.get('code')||'';const st:any=await env.DB.prepare('DELETE FROM oauth_states WHERE state=? AND provider=? AND expires_at>? RETURNING verifier').bind(state,'gjw',Date.now()).first();if(!st)return json({error:'Gan Jing World OAuth state 無效或逾時'},400);const form=new URLSearchParams({code,code_verifier:st.verifier,client_id:env.GJW_CLIENT_ID,redirect_uri:`${url.origin}/api/auth/gjw/callback`,grant_type:'authorization_code'});if(env.GJW_CLIENT_SECRET)form.set('client_secret',env.GJW_CLIENT_SECRET);const r=await fetch('https://www.ganjingworld.com/v1/oauth2/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:form});const t:any=await r.json();if(!r.ok)return json({error:t.error_description||t.message||'Gan Jing World OAuth 失敗'},400);const meR=await fetch('https://api.ganjingworld.com/v1/oauth2/me',{headers:{Authorization:String(t.access_token)}});const me:any=await meR.json();const data=me.data||me;await upsertToken(env,'gjw',t,{email:data.email,name:data.name||data.nickname,channelId:data.pid,channelName:data.channel_name||data.name||data.nickname});return redirect('/');}
 
+async function youtubeOptions(env:Env){
+  const access=await youtubeAccess(env);
+  const headers={Authorization:`Bearer ${access}`};
+  const [pr,cr]=await Promise.all([
+    fetch('https://www.googleapis.com/youtube/v3/playlists?part=snippet&mine=true&maxResults=50',{headers}),
+    fetch('https://www.googleapis.com/youtube/v3/videoCategories?part=snippet&regionCode=TW',{headers}),
+  ]);
+  const pd:any=await pr.json().catch(()=>({}));const cd:any=await cr.json().catch(()=>({}));
+  const playlists=(pd.items||[]).map((item:any)=>({id:String(item.id),title:String(item.snippet?.title||item.id)}));
+  const categories=(cd.items||[]).filter((item:any)=>item.snippet?.assignable!==false).map((item:any)=>({id:String(item.id),title:String(item.snippet?.title||item.id)}));
+  return {playlists,categories};
+}
+
+async function youtubePostprocess(request:Request,env:Env){
+  const b:any=await request.json().catch(()=>({}));const videoId=String(b.videoId||''),playlistId=String(b.playlistId||'');
+  if(!videoId||!playlistId)return json({ok:true});
+  const access=await youtubeAccess(env);
+  const r=await fetch('https://www.googleapis.com/youtube/v3/playlistItems?part=snippet',{method:'POST',headers:{Authorization:`Bearer ${access}`,'content-type':'application/json'},body:JSON.stringify({snippet:{playlistId,resourceId:{kind:'youtube#video',videoId}}})});
+  if(!r.ok)return json({error:`YouTube 播放清單設定失敗：${(await r.text()).slice(0,280)}`},r.status);
+  return json({ok:true});
+}
+
+function concatBytes(parts:Uint8Array[]){const size=parts.reduce((sum,p)=>sum+p.length,0);const out=new Uint8Array(size);let offset=0;for(const p of parts){out.set(p,offset);offset+=p.length;}return out;}
+async function youtubeCaption(request:Request,env:Env){
+  const form=await request.formData();const videoId=String(form.get('videoId')||''),language=String(form.get('language')||'zh-TW'),name=String(form.get('name')||'字幕').slice(0,150);const file=form.get('file');
+  if(!videoId||!(file instanceof File))return json({error:'缺少 videoId 或字幕檔'},400);
+  if(file.size>100*1024*1024)return json({error:'YouTube 字幕檔上限為 100MB'},413);
+  const boundary=`svs_${randomToken(12)}`,enc=new TextEncoder();
+  const meta=JSON.stringify({snippet:{videoId,language,name,isDraft:false}});
+  const head=enc.encode(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: ${file.type||'application/octet-stream'}\r\n\r\n`);
+  const tail=enc.encode(`\r\n--${boundary}--\r\n`);const bytes=concatBytes([head,new Uint8Array(await file.arrayBuffer()),tail]);
+  const access=await youtubeAccess(env);const r=await fetch('https://www.googleapis.com/upload/youtube/v3/captions?part=snippet&uploadType=multipart',{method:'POST',headers:{Authorization:`Bearer ${access}`,'content-type':`multipart/related; boundary=${boundary}`},body:bytes});
+  if(!r.ok)return json({error:`YouTube 字幕上傳失敗：${(await r.text()).slice(0,280)}`},r.status);return json({ok:true});
+}
+
 async function route(request:Request,env:Env){const url=new URL(request.url),p=url.pathname,m=request.method.toUpperCase();
   if(p==='/api/auth/youtube/start')return youtubeStart(request,env);if(p==='/api/auth/youtube/callback')return youtubeCallback(request,env);if(p==='/api/auth/gjw/start')return gjwStart(request,env);if(p==='/api/auth/gjw/callback')return gjwCallback(request,env);
   if(p==='/api/status'&&m==='GET'){const a=await admin(request,env);const yt:any=await tokenRow(env,'youtube');const gjw:any=await tokenRow(env,'gjw');return json({authenticated:!!a,email:a?.email,youtube:{connected:!!yt,channelTitle:yt?.channel_name},gjw:{connected:!!gjw,channelName:gjw?.channel_name}});}
   await requireAdmin(request,env);
   if(p==='/api/youtube/access-token'&&m==='GET')return json({accessToken:await youtubeAccess(env)});
+  if(p==='/api/youtube/options'&&m==='GET')return json(await youtubeOptions(env));
+  if(p==='/api/youtube/postprocess'&&m==='POST')return youtubePostprocess(request,env);
+  if(p==='/api/youtube/caption'&&m==='POST')return youtubeCaption(request,env);
   if(p==='/api/youtube/upload-session'&&m==='POST'){
-    const b:any=await request.json();
-    const access=await youtubeAccess(env);
-    const body={snippet:{title:b.title,description:b.description,tags:b.tags||[],categoryId:String(b.youtubeCategory||'22'),defaultLanguage:b.language||'zh-TW'},status:{privacyStatus:b.privacy||'private',selfDeclaredMadeForKids:!!b.madeForKids}};
-    // The upload session is created server-side but the bytes are sent by the browser.
-    // Passing the browser-facing origin when the resumable session is created lets
-    // Google's upload host return the matching CORS headers for the later PUTs.
-    const r=await fetch('https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status',{
-      method:'POST',
-      headers:{Authorization:`Bearer ${access}`,'content-type':'application/json; charset=UTF-8','X-Upload-Content-Length':String(b.fileSize),'X-Upload-Content-Type':String(b.mimeType||'video/mp4'),Origin:url.origin},
-      body:JSON.stringify(body)
-    });
+    const b:any=await request.json();const access=await youtubeAccess(env);
+    const scheduled=String(b.publishAt||'').trim();const privacy=scheduled?'private':String(b.privacy||'private');
+    const body:any={snippet:{title:b.title,description:b.description,tags:b.tags||[],categoryId:String(b.youtubeCategory||'22'),defaultLanguage:b.language||'zh-TW'},status:{privacyStatus:privacy,selfDeclaredMadeForKids:!!b.madeForKids,containsSyntheticMedia:!!b.containsSyntheticMedia,license:b.license==='creativeCommon'?'creativeCommon':'youtube',embeddable:b.embeddable!==false,publicStatsViewable:b.publicStatsViewable!==false}};
+    if(scheduled)body.status.publishAt=scheduled;
+    const recordingDate=String(b.recordingDate||'').trim();if(recordingDate)body.recordingDetails={recordingDate:recordingDate.includes('T')?recordingDate:`${recordingDate}T00:00:00Z`};
+    const q=new URLSearchParams({uploadType:'resumable',part:recordingDate?'snippet,status,recordingDetails':'snippet,status',notifySubscribers:b.notifySubscribers===false?'false':'true'});
+    const r=await fetch(`https://www.googleapis.com/upload/youtube/v3/videos?${q}`,{method:'POST',headers:{Authorization:`Bearer ${access}`,'content-type':'application/json; charset=UTF-8','X-Upload-Content-Length':String(b.fileSize),'X-Upload-Content-Type':String(b.mimeType||'video/mp4'),Origin:url.origin},body:JSON.stringify(body)});
     if(!r.ok)return json({error:`YouTube 建立上傳工作階段失敗：${(await r.text()).slice(0,300)}`},r.status);
     const uploadUrl=r.headers.get('location');if(!uploadUrl)return json({error:'YouTube 沒有回傳 resumable upload URL'},502);return json({uploadUrl,accessToken:access});
   }
   if(p==='/api/gjw/upload-token'&&m==='GET')return json({uploadToken:await gjwUploadToken(env)});
-  if(p==='/api/gjw/create-video'&&m==='POST'){const b:any=await request.json();const access=await gjwAccess(env);const body:any={type:'Video',title:b.title,description:b.description||'',category_id:b.gjwCategory,lang:b.language||'zh-TW',visibility:b.privacy==='private'?'private':'public',poster_url:b.posterUrl,poster_hd_url:b.posterHdUrl,made_for_kids:!!b.madeForKids,user_made_for_kids:!!b.madeForKids,auto_caption_flag:true};if(b.privacy==='private')body.mode='draft';const cr=await fetch('https://api.ganjingworld.com/v1/content/create',{method:'POST',headers:{Authorization:access,'content-type':'application/json'},body:JSON.stringify(body)});const cd:any=await cr.json();if(!cr.ok)return json({error:cd.message||'Gan Jing World 建立影片資料失敗'},cr.status);const contentId=String(cd?.data?.content_id||cd?.data?.id||cd?.content_id||'');if(!contentId)return json({error:'Gan Jing World 沒有回傳 content id'},502);const uploadId=Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b=>b.toString(16).padStart(2,'0')).join('');const ir=await fetch('https://api.ganjingworld.com/v1/media/upload/id',{method:'POST',headers:{Authorization:access,'content-type':'application/json'},body:JSON.stringify({content_id:contentId,upload_id:uploadId,type:'TUS'})});if(!ir.ok)return json({error:'Gan Jing World 註冊 upload id 失敗'},ir.status);const row:any=await tokenRow(env,'gjw');return json({contentId,channelId:row?.channel_id,uploadId});}
+  if(p==='/api/gjw/create-video'&&m==='POST'){const b:any=await request.json();const access=await gjwAccess(env);const body:any={type:'Video',title:b.title,description:b.description||'',category_id:b.gjwCategory,lang:b.language||'zh-TW',visibility:b.privacy==='private'||b.publishAt?'private':'public',poster_url:b.posterUrl,poster_hd_url:b.posterHdUrl,made_for_kids:!!b.madeForKids,user_made_for_kids:!!b.madeForKids,auto_caption_flag:true};if(b.privacy==='private'||b.publishAt)body.mode='draft';const cr=await fetch('https://api.ganjingworld.com/v1/content/create',{method:'POST',headers:{Authorization:access,'content-type':'application/json'},body:JSON.stringify(body)});const cd:any=await cr.json();if(!cr.ok)return json({error:cd.message||'Gan Jing World 建立影片資料失敗'},cr.status);const contentId=String(cd?.data?.content_id||cd?.data?.id||cd?.content_id||'');if(!contentId)return json({error:'Gan Jing World 沒有回傳 content id'},502);const uploadId=Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b=>b.toString(16).padStart(2,'0')).join('');const ir=await fetch('https://api.ganjingworld.com/v1/media/upload/id',{method:'POST',headers:{Authorization:access,'content-type':'application/json'},body:JSON.stringify({content_id:contentId,upload_id:uploadId,type:'TUS'})});if(!ir.ok)return json({error:'Gan Jing World 註冊 upload id 失敗'},ir.status);const row:any=await tokenRow(env,'gjw');return json({contentId,channelId:row?.channel_id,uploadId});}
   if(p==='/api/gjw/finish-video'&&m==='POST'){const b:any=await request.json();const token=await gjwUploadToken(env);const idR=await fetch(String(b.tusUrl),{headers:{Authorization:`Bearer ${token}`,Accept:'application/json'}});const idD:any=await idR.json();if(!idR.ok)return json({error:'無法取得 Gan Jing World video id'},idR.status);const videoId=String(idD?.body?.video_id||'');if(!videoId)return json({error:'Gan Jing World 沒有回傳 video id'},502);return json({videoId});}
   if(p==='/api/gjw/video-status'&&m==='GET'){const videoId=url.searchParams.get('videoId')||'';const contentId=url.searchParams.get('contentId')||'';if(!videoId||!contentId)return json({error:'缺少 Gan Jing World videoId/contentId'},400);const token=await gjwUploadToken(env);const sr=await fetch(`https://vodapi.cloudokyo.cloud/api/v1/status/${encodeURIComponent(videoId)}`,{headers:{Authorization:`Bearer ${token}`}});const sd:any=await sr.json();if(!sr.ok)return json({error:sd?.message||'Gan Jing World 狀態查詢失敗'},sr.status);if(sd?.body?.url)return json({ready:true,url:`https://www.ganjingworld.com/video/${contentId}`,playbackUrl:sd.body.url});if(['error','failed'].includes(String(sd?.body?.status||'').toLowerCase()))return json({error:'Gan Jing World 轉碼失敗'},502);return json({ready:false,progress:Number(sd?.body?.progress||0),status:sd?.body?.status||'processing'});}
   return json({error:'Not found'},404);
