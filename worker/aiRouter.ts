@@ -47,24 +47,6 @@ function normalizeChoice(answer: any, optionCount: number) {
       if (n >= 1 && n <= optionCount) return n - 1;
     }
   }
-
-  const probabilities = answer?.probabilities || answer?.scores || answer?.options;
-  if (probabilities && typeof probabilities === 'object') {
-    let best = -1;
-    let bestValue = -Infinity;
-    Object.entries(probabilities).forEach(([key, raw]) => {
-      const m = key.match(/(?:frame[_-]?)?(\d+)/i);
-      if (!m) return;
-      const n = Number(m[1]);
-      const index = n >= 0 && n < optionCount ? n : n >= 1 && n <= optionCount ? n - 1 : -1;
-      const value = typeof raw === 'number' ? raw : Number((raw as any)?.probability ?? (raw as any)?.score ?? raw);
-      if (index >= 0 && Number.isFinite(value) && value > bestValue) {
-        best = index;
-        bestValue = value;
-      }
-    });
-    if (best >= 0) return best;
-  }
   return 0;
 }
 
@@ -75,6 +57,18 @@ function uniqueIndexes(values: number[], optionCount: number) {
     seen.add(index);
     return true;
   });
+}
+
+function preferenceText(preferences: any) {
+  const lines: string[] = [];
+  if (preferences?.introOutro) lines.push('Give extra consideration to strong opening-title or closing-title frames when they are visually useful and readable.');
+  if (preferences?.faces) lines.push('Prefer clear human faces with natural, engaging expressions when people are present.');
+  if (preferences?.sharpness) lines.push('Strongly prefer sharp, in-focus frames and avoid motion blur.');
+  if (preferences?.lighting) lines.push('Prefer balanced lighting, clear contrast, and avoid frames that are too dark or blown out.');
+  if (preferences?.lowText) lines.push('Avoid frames dominated by tiny text, dense slides, or unreadable text.');
+  const custom = String(preferences?.custom || '').trim().slice(0, 500);
+  if (custom) lines.push(`User preference: ${custom}`);
+  return lines;
 }
 
 async function selectThumbnail(request: Request, env: AiEnv) {
@@ -89,6 +83,7 @@ async function selectThumbnail(request: Request, env: AiEnv) {
   const criteria: Record<string, string> = {};
   const times: number[] = [];
   const localScores: number[] = [];
+  const roles: string[] = [];
 
   for (let i = 0; i < frames.length; i++) {
     const image = String(frames[i]?.image || '');
@@ -96,25 +91,28 @@ async function selectThumbnail(request: Request, env: AiEnv) {
       return json({ error: `第 ${i + 1} 張候選縮圖格式不支援` }, 400);
     }
     if (image.length > 4_500_000) return json({ error: `第 ${i + 1} 張候選縮圖太大` }, 413);
+    const role = ['intro', 'content', 'outro'].includes(String(frames[i]?.role)) ? String(frames[i].role) : 'content';
     images.push(image);
     times.push(Number(frames[i]?.at || 0));
     localScores.push(Number(frames[i]?.localScore || 0));
-    criteria[`frame_${i}`] = `Image ${i + 1}: choose this when it is the strongest thumbnail.`;
+    roles.push(role);
+    criteria[`frame_${i}`] = `Image ${i + 1}, ${role} frame, at ${Math.round(times[i])} seconds.`;
   }
+
+  const priorities = [
+    'clear and sharp subject',
+    'visually interesting composition that still reads at small thumbnail size',
+    'avoid black frames, transitions, awkward gestures, closed eyes, duplicate-looking frames, or accidental frames',
+    ...preferenceText(body?.preferences),
+  ];
 
   const result: any = await env.AI.run('@cf/cloudflare/clef-flash', {
     model: 'clef-flash',
     state: {
-      task: 'Rank the attached video frames as thumbnail candidates. The choice probabilities should reflect thumbnail quality across all attached images.',
-      priorities: [
-        'clear and sharp subject',
-        'good facial expression when people are present',
-        'good lighting and contrast',
-        'visually interesting composition',
-        'avoid blur, closed eyes, awkward gestures, transition frames, black frames, slides dominated by tiny text, or duplicated-looking frames',
-        'prefer frames that remain readable as small YouTube thumbnails',
-      ],
+      task: 'Rank all attached video frames as thumbnail candidates. Return the strongest overall choice and suitability scores for alternatives.',
+      priorities,
       frame_times_seconds: times,
+      frame_roles: roles,
     },
     images,
     questions: {
@@ -137,14 +135,14 @@ async function selectThumbnail(request: Request, env: AiEnv) {
   });
 
   const aiRanked = scores
-    .map((score, i) => ({ i, score }))
-    .filter(item => item.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .map(item => item.i);
+    .map((score: number, i: number) => ({ i, score }))
+    .filter((item: { i: number; score: number }) => item.score > 0)
+    .sort((a: { i: number; score: number }, b: { i: number; score: number }) => b.score - a.score)
+    .map((item: { i: number; score: number }) => item.i);
   const localRanked = localScores
-    .map((score, i) => ({ i, score }))
-    .sort((a, b) => b.score - a.score)
-    .map(item => item.i);
+    .map((score: number, i: number) => ({ i, score }))
+    .sort((a: { i: number; score: number }, b: { i: number; score: number }) => b.score - a.score)
+    .map((item: { i: number; score: number }) => item.i);
   const recommendedIndexes = uniqueIndexes([index, ...aiRanked, ...localRanked], frames.length).slice(0, Math.min(4, frames.length));
 
   return json({
