@@ -63,6 +63,8 @@ export default function ShortVideoPage() {
   const [metaPageId, setMetaPageId] = useState('');
   const [socialBusy, setSocialBusy] = useState(false);
   const [socialMessage, setSocialMessage] = useState('');
+  const loginError = new URLSearchParams(window.location.search).has('login_error');
+  const loginUrl = '/api/auth/youtube/start?returnTo=%2F%3Fpage%3Dshort';
   const [video, setVideo] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState('');
   const [dragActive, setDragActive] = useState(false);
@@ -113,10 +115,10 @@ export default function ShortVideoPage() {
 
   const available = useMemo(() => {
     const set = new Set<PlatformId>();
-    if (status?.youtube.connected) set.add('youtube');
-    if (social?.facebook.connected) set.add('facebook');
+    if (status?.authenticated && status.youtube.connected) set.add('youtube');
+    if (social?.authenticated && social.facebook.connected) set.add('facebook');
     return set;
-  }, [status?.youtube.connected, social?.facebook.connected]);
+  }, [status?.authenticated, status?.youtube.connected, social?.authenticated, social?.facebook.connected]);
   const selectedAvailable = selected.filter(id => available.has(id));
   const facebookRatio = videoMeta.width && videoMeta.height ? videoMeta.width / videoMeta.height : 0;
   const facebookCompatible = !video || (
@@ -220,6 +222,8 @@ export default function ShortVideoPage() {
 
     <section className="panel social-connect-panel">
       <div className="short-section-heading"><div><div className="eyebrow">ACCOUNTS</div><h2>① 社群帳號連線</h2></div><button type="button" className="small-button" onClick={()=>void refreshConnections()}><RefreshCw size={14}/>更新狀態</button></div>
+      {status && !status.authenticated && <div className="notice info" role="status"><span>請先使用管理員 Google 帳號登入／重新授權 YouTube。登入完成後會返回短影音頁，再連接 Meta 或 Threads。</span><a className="small-button" href={loginUrl}>管理員登入 <ExternalLink size={14}/></a></div>}
+      {loginError && <div className="social-message" role="alert">Google 授權未完成，請重新登入。</div>}
       <div className="social-connect-grid">
         <div className={`social-connect-card ${social?.facebook.connected?'connected':''}`}>
           <div className="social-connect-title"><span className="platform-badge">META</span><div><b>Meta</b><small>Facebook Reels ＋ Instagram Reels</small></div></div>
@@ -251,7 +255,7 @@ export default function ShortVideoPage() {
           </button>;
         })}
       </div>
-      {!status?.youtube.connected && <div className="notice info"><span>YouTube 尚未連接，先完成授權即可直接使用 Shorts 發布。</span><a className="small-button" href="/api/auth/youtube/start">連接 YouTube <ExternalLink size={14}/></a></div>}
+      {!status?.youtube.connected && <div className="notice info"><span>YouTube 尚未連接，先完成授權即可直接使用 Shorts 發布。</span><a className="small-button" href={loginUrl}>連接 YouTube <ExternalLink size={14}/></a></div>}
     </section>
 
     <section className="panel short-compose-panel">
