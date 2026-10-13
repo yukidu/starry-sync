@@ -101,7 +101,7 @@ async function socialStatus(request:Request,env:SocialEnv) {
 }
 
 async function metaStart(request:Request,env:SocialEnv) {
-  await requireAdmin(request,env);
+  if(!await admin(request,env)) return redirect('/?page=short&login_required=1');
   if(!env.META_APP_ID||!env.META_APP_SECRET) return redirect('/?page=short&setup=meta');
   const url=new URL(request.url),state=randomToken();
   await env.DB.prepare('INSERT INTO oauth_states(state,provider,expires_at) VALUES(?,?,?)').bind(state,'meta',Date.now()+10*60*1000).run();
@@ -210,7 +210,7 @@ async function instagramPublish(request:Request,env:SocialEnv) {
 }
 
 async function threadsStart(request:Request,env:SocialEnv) {
-  await requireAdmin(request,env);
+  if(!await admin(request,env)) return redirect('/?page=short&login_required=1');
   if(!env.THREADS_APP_ID||!env.THREADS_APP_SECRET) return redirect('/?page=short&setup=threads');
   const url=new URL(request.url),state=randomToken();
   await env.DB.prepare('INSERT INTO oauth_states(state,provider,expires_at) VALUES(?,?,?)').bind(state,'threads',Date.now()+10*60*1000).run();
