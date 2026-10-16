@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Clapperboard, Menu, MonitorPlay, RefreshCw, X } from 'lucide-react';
+import { Clapperboard, Menu, MonitorPlay, RefreshCw, UserRound, X } from 'lucide-react';
+import { openStarrySyncAccount } from './starrySso';
 
 export type MainMode = 'long' | 'short';
 
@@ -71,6 +72,7 @@ export default function MainNav({ active, onNavigate, onRefresh }: Props) {
         <button type="button" className={`main-menu-row ${active === 'long' ? 'active' : ''}`} onClick={() => go('long')}><MonitorPlay size={20}/><span><b>長影音</b><small>YouTube · Gan Jing World · Odysee</small></span></button>
         <button type="button" className={`main-menu-row ${active === 'short' ? 'active' : ''}`} onClick={() => go('short')}><Clapperboard size={20}/><span><b>短影音</b><small>Reels · Shorts · TikTok · 更多平台</small></span></button>
         <div className="main-menu-divider" />
+        <button type="button" className="main-menu-row" onClick={() => { setOpen(false); openStarrySyncAccount(); }}><UserRound size={20}/><span><b>繁星帳號</b><small>登入、切換帳號或登出全部繁星 App</small></span></button>
         <button type="button" className="main-menu-row" onClick={() => { setOpen(false); onRefresh(); }}><RefreshCw size={20}/><span><b>重新整理</b><small>重新讀取平台與授權狀態</small></span></button>
       </div>
     </div>}
