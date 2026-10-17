@@ -1,5 +1,6 @@
+# Worker 內部名稱暫時保留 starsvideosync，避免既有 Secrets、D1 與各平台 OAuth 設定失效；公開品牌已統一為繁星共振。
 name = "starsvideosync"
-main = "worker/aiRouter.ts"
+main = "worker/starrySsoWrapper.ts"
 compatibility_date = "2026-10-01"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
@@ -12,17 +13,22 @@ custom_domain = true
 directory = "./dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/api/*"]
+run_worker_first = ["/api/*", "/auth/*"]
 
 [[d1_databases]]
 binding = "DB"
 database_name = "starsvideosync_db"
 database_id = "4df9cafb-0659-435a-ac67-ca57c4d82f78"
 
+[[d1_databases]]
+binding = "STARRY_ID_DB"
+database_name = "starry_id_db"
+database_id = "01195c92-555e-4816-bddc-5b8cb2e795db"
+
 [ai]
 binding = "AI"
 
 [vars]
-APP_NAME = "StarsVideoSync"
+APP_NAME = "繁星共振"
 ADMIN_EMAIL = "yukidu@gmail.com"
 META_GRAPH_VERSION = "v26.0"
