@@ -7,7 +7,7 @@ let lastSync = 0;
 
 async function fetchJson(url: string, init: RequestInit = {}) {
   const response = await fetch(url, { cache:'no-store', credentials:'include', ...init });
-  const data = await response.clone().json().catch(() => ({}));
+  const data:any = await response.clone().json().catch(() => ({}));
   return { response, data };
 }
 
@@ -39,9 +39,9 @@ export async function syncStarryResonanceSession(force = false) {
       fetchJson(`${CENTRAL}/api/ecosystem/session`, { mode:'cors' }),
       fetchJson(LOCAL_STATUS)
     ]);
-    const central = centralResult.response.ok ? centralResult.data : { authenticated:false };
-    const local = localResult.response.ok ? localResult.data : { authenticated:false };
-    const centralUser = central?.authenticated ? central?.user : null;
+    const central:any = centralResult.response.ok ? centralResult.data : { authenticated:false };
+    const local:any = localResult.response.ok ? localResult.data : { authenticated:false };
+    const centralUser:any = central?.authenticated ? central?.user : null;
 
     if (!centralUser) {
       if (local?.authenticated) {
@@ -102,7 +102,9 @@ function addAccountActions() {
   logoutBtn.className = 'main-menu-row';
   logoutBtn.innerHTML = '<span style="font-size:20px">↪</span><span><b>登出</b><small>所有繁星 App 一起登出</small></span>';
   logoutBtn.addEventListener('click', () => void logoutStarryResonanceEverywhere());
-  panel.append(divider, switchBtn, logoutBtn);
+  panel.appendChild(divider);
+  panel.appendChild(switchBtn);
+  panel.appendChild(logoutBtn);
 }
 
 export function initStarryResonanceEcosystem() {
