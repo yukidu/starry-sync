@@ -55,9 +55,7 @@ async function finishStarryLogin(request: Request, env: Env) {
   if (!row?.userId) return redirect('/?login=expired');
   const member:any = await env.STARRY_ID_DB.prepare(`SELECT u.primaryEmail,u.status FROM users u WHERE u.id=? LIMIT 1`).bind(String(row.userId)).first().catch(() => null);
   const email = String(member?.primaryEmail || '').trim().toLowerCase();
-  if (!member || member.status !== 'active' || !email || email !== String(env.ADMIN_EMAIL || '').trim().toLowerCase()) {
-    return redirect('/?login=denied');
-  }
+  if (!member || member.status !== 'active' || !email || email !== String(env.ADMIN_EMAIL || '').trim().toLowerCase()) return redirect('/?login=denied');
   const sid = randomToken();
   const now = Date.now();
   await env.DB.prepare('INSERT INTO admin_sessions(id,email,expires_at,created_at) VALUES(?,?,?,?)')
@@ -72,7 +70,7 @@ async function localLogout(request: Request, env: Env) {
 }
 
 export default {
-  async fetch(request: Request, env: Env, ctx?: any) {
+  async fetch(request: Request, env: Env) {
     const url = new URL(request.url);
     if (url.pathname === '/auth/callback' && request.method === 'GET') {
       try { return await finishStarryLogin(request, env); }
@@ -80,6 +78,6 @@ export default {
     }
     if (url.pathname === '/api/starry/logout' && request.method === 'POST') return localLogout(request, env);
     if (url.pathname === '/auth/starry' && request.method === 'GET') return redirect('https://id.starry.phd/auth/starry-sync');
-    return app.fetch(request, env as any, ctx);
+    return app.fetch(request, env as any);
   }
 };
