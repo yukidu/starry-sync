@@ -1,4 +1,5 @@
 import app from './aiRouter';
+import { checkCentralAppEntitlement } from './centralAppAccess';
 
 type Env = {
   DB: D1Database;
@@ -56,6 +57,8 @@ async function finishStarryLogin(request: Request, env: Env) {
   const member:any = await env.STARRY_ID_DB.prepare(`SELECT u.primaryEmail,u.status FROM users u WHERE u.id=? LIMIT 1`).bind(String(row.userId)).first().catch(() => null);
   const email = String(member?.primaryEmail || '').trim().toLowerCase();
   if (!member || member.status !== 'active' || !email || email !== String(env.ADMIN_EMAIL || '').trim().toLowerCase()) return redirect('/?login=denied');
+  const entitlement=await checkCentralAppEntitlement(env.STARRY_ID_DB,String(row.userId),APP_ID);
+  if(!entitlement.allowed)return redirect('/?login=denied');
   const sid = randomToken();
   const now = Date.now();
   await env.DB.prepare('INSERT INTO admin_sessions(id,email,expires_at,created_at) VALUES(?,?,?,?)')
@@ -78,6 +81,24 @@ export default {
     }
     if (url.pathname === '/api/starry/logout' && request.method === 'POST') return localLogout(request, env);
     if (url.pathname === '/auth/starry' && request.method === 'GET') return redirect('https://id.starry.phd/auth/starry-sync');
+    // Existing 30-day local sessions must also honor central permission revocation.
+    // Public pages remain accessible to visitors with no membership cookie.
+    const sid=cookies(request)[SESSION]||'';
+    if(sid&&(url.pathname==='/'||url.pathname.startsWith('/api/'))){
+      try{
+        const local:any=await env.DB.prepare('SELECT email FROM admin_sessions WHERE id=? AND expires_at>? LIMIT 1')
+          .bind(sid,Date.now()).first();
+        if(local){
+          const member:any=await env.STARRY_ID_DB.prepare('SELECT id FROM users WHERE LOWER(TRIM(primaryEmail))=? LIMIT 1')
+            .bind(String(local.email||'').trim().toLowerCase()).first();
+          const state=member?.id?await checkCentralAppEntitlement(env.STARRY_ID_DB,String(member.id),APP_ID):{allowed:false};
+          if(!state.allowed){
+            if(url.pathname==='/')return new Response('<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><main style="max-width:440px;margin:14vh auto;text-align:center;font-family:system-ui"><h1>您沒有使用權限</h1><p>請聯絡繁星管理員。</p><a href="https://id.starry.phd/">前往 Starry ID</a></main></html>',{status:403,headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});
+            return json({error:'您沒有使用權限',code:'APP_ACCESS_DENIED'},403);
+          }
+        }
+      }catch(error){console.error('Starry Sync central authorization unavailable',error);return json({error:'會員權限驗證暫時無法使用'},503);}
+    }
     return app.fetch(request, env as any);
   }
 };
